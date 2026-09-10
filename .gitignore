@@ -1,0 +1,14 @@
+# Swift build output
+.build/
+build/
+*.xcuserstate
+DerivedData/
+
+# Generated test audio — regenerate with the say/ffmpeg commands in the README
+corpus/*.aiff
+corpus/*.wav
+corpus/*.csv
+
+# Local run artifacts
+*.log
+.DS_Store
