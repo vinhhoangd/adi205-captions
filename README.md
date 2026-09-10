@@ -32,6 +32,28 @@ http://10.11.20.156:8420     # anyone on the same Wi-Fi
 
 Live log: `tail -f /tmp/captiond.log`
 
+### Choosing the microphone
+
+`CAPTION_DEVICE` is accepted but has no effect, and the app says so at startup.
+`AVAudioEngine` reads through a `CADefaultDeviceAggregate` that follows the
+**system** default input; setting `deviceID` on the input node is silently
+ignored. Input selection therefore has to happen at the system level:
+
+```bash
+swift run -c release setinput              # list inputs, • marks the current one
+swift run -c release setinput "MacBook Pro"
+```
+
+This matters more than it sounds. A Bluetooth headset connecting mid-session
+takes over as the default input, and its microphone will happily deliver
+silence while everything else looks healthy — the tap fires, buffers convert,
+the page says "live", and no captions appear. The app now logs a peak level
+every five seconds so this is visible rather than mysterious, and it rebuilds
+capture automatically when the audio hardware changes underneath it.
+
+**Before demonstrating, run `setinput` and confirm the built-in microphone is
+selected.**
+
 ### Settings (environment variables)
 
 | Variable | Default | Meaning |
@@ -44,7 +66,7 @@ Live log: `tail -f /tmp/captiond.log`
 | `CAPTION_CORRECTION` | `0` | `1` enables the on-device LLM pass — see the finding below |
 | `CAPTION_VAD` | `1` | Apple `SpeechDetector` ahead of transcription |
 | `CAPTION_VOICEPROC` | `0` | `1` enables AEC + noise suppression |
-| `CAPTION_DEVICE` | — | Input device, case-insensitive substring (e.g. `macbook`) |
+| `CAPTION_DEVICE` | — | Requested input device. **Does not work — see below.** |
 
 ## Measured results
 
