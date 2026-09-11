@@ -91,7 +91,7 @@ public final class CaptionServer: @unchecked Sendable {
         let obj: [String: Any] = [
             "kind": event.kind.rawValue,
             "en": event.english,
-            "tr": event.translation,
+            "tr": event.translations,   // keyed by language code
             "latencyMS": Int(event.latency.isFinite ? event.latency * 1000 : 0),
             "corrected": event.corrected,
             "confidence": event.confidence,

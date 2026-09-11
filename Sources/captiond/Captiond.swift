@@ -21,11 +21,29 @@ func note(_ m: String) {
 /// Owns the TranslationSession (only SwiftUI vends one) and drives the live
 /// pipeline. The window is incidental — the real interface is the caption page
 /// every laptop and phone in the room opens.
+/// Owns one TranslationSession per target language and drives the live pipeline.
+///
+/// The Translation framework only vends a session inside `.translationTask`, and
+/// that session is valid only for the lifetime of the closure. To hold three at
+/// once, each closure registers its session and then parks — the suspension is
+/// what keeps the session alive.
 struct CaptiondView: View {
-    @State private var config: TranslationSession.Configuration?
+    @State private var cfgVI: TranslationSession.Configuration?
+    @State private var cfgHans: TranslationSession.Configuration?
+    @State private var cfgHant: TranslationSession.Configuration?
+
+    @State private var sessions: [String: TranslationSession] = [:]
+    @State private var started = false
+
     @State private var status = "starting…"
     @State private var viewers = 0
     @State private var urls: [String] = []
+
+    private var wanted: [String] {
+        (ProcessInfo.processInfo.environment["CAPTION_LANGS"] ?? "vi,zh-Hans,zh-Hant")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -34,38 +52,59 @@ struct CaptiondView: View {
             ForEach(urls, id: \.self) { u in
                 Text(u).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
             }
-            Text("\(viewers) viewer\(viewers == 1 ? "" : "s")")
+            Text("\(viewers) viewer\(viewers == 1 ? "" : "s") · \(sessions.count)/\(wanted.count) languages")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(16)
-        .frame(width: 340, alignment: .leading)
+        .frame(width: 360, alignment: .leading)
         .task {
-            let target = ProcessInfo.processInfo.environment["CAPTION_LANG"] ?? "vi"
-            config = TranslationSession.Configuration(
-                source: Locale.Language(identifier: "en"),
-                target: Locale.Language(identifier: target))
+            let src = Locale.Language(identifier: "en")
+            if wanted.contains("vi") { cfgVI = .init(source: src, target: .init(identifier: "vi")) }
+            if wanted.contains("zh-Hans") { cfgHans = .init(source: src, target: .init(identifier: "zh-Hans")) }
+            if wanted.contains("zh-Hant") { cfgHant = .init(source: src, target: .init(identifier: "zh-Hant")) }
         }
-        .translationTask(config) { session in
-            await run(session: session,
-                      status: { status = $0 },
-                      viewers: { viewers = $0 },
-                      urls: { urls = $0 })
+        .translationTask(cfgVI)   { s in await hold("vi", s) }
+        .translationTask(cfgHans) { s in await hold("zh-Hans", s) }
+        .translationTask(cfgHant) { s in await hold("zh-Hant", s) }
+    }
+
+    /// Registers a session, starts the pipeline once every language has one, then
+    /// suspends indefinitely so the framework keeps the session valid.
+    @MainActor
+    private func hold(_ lang: String, _ session: TranslationSession) async {
+        sessions[lang] = session
+        note("translation session ready: \(lang) (\(sessions.count)/\(wanted.count))")
+
+        if !started, sessions.count == wanted.count {
+            started = true
+            let all = sessions
+            Task { @MainActor in
+                await run(sessions: all,
+                          status: { status = $0 },
+                          viewers: { viewers = $0 },
+                          urls: { urls = $0 })
+            }
+        }
+        // Park. Returning here would invalidate the session.
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3600))
         }
     }
 }
 
 @MainActor
-func run(session: TranslationSession,
+func run(sessions: [String: TranslationSession],
          status: @escaping (String) -> Void,
          viewers: @escaping (Int) -> Void,
          urls: @escaping ([String]) -> Void) async {
 
     let env = ProcessInfo.processInfo.environment
-    let lang = env["CAPTION_LANG"] ?? "vi"
+    let langs = Array(sessions.keys).sorted()
+    let lang = langs.first ?? "vi"
     let port = UInt16(env["CAPTION_PORT"] ?? "") ?? 8420
     var cfg = PipelineConfig()
     cfg.maskK = Int(env["CAPTION_MASK_K"] ?? "") ?? 3
-    cfg.targetLanguage = lang
+    cfg.targetLanguages = langs
     cfg.enableCorrection = (env["CAPTION_CORRECTION"] ?? "0") == "1"
     let glossary = (env["CAPTION_GLOSSARY"] ?? "")
         .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
@@ -73,7 +112,7 @@ func run(session: TranslationSession,
     // Server first, so viewers can connect while the models warm up.
     let server: CaptionServer
     do {
-        server = try CaptionServer(port: port, page: CaptionPage.html(target: lang))
+        server = try CaptionServer(port: port, page: CaptionPage.html(languages: langs))
         server.start()
     } catch { status("server failed: \(error)"); note("server failed: \(error)"); return }
 
@@ -105,7 +144,7 @@ func run(session: TranslationSession,
     let format = setup.format
     note("biasing terms: \(glossary.count) · speech detector: \(setup.detector != nil)")
 
-    let pipeline = CaptionPipeline(config: cfg, translator: session, glossary: glossary)
+    let pipeline = CaptionPipeline(config: cfg, translators: sessions, glossary: glossary)
     var finals = 0
     pipeline.onEvent { ev in
         server.broadcast(ev)
@@ -113,7 +152,7 @@ func run(session: TranslationSession,
         if ev.kind == .finalized {
             finals += 1
             note(String(format: "#%d [%.0f ms] EN: %@", finals, ev.latency * 1000, ev.english))
-            note("        \(lang.uppercased()): \(ev.translation)")
+            for l in langs { note("        \(l): \(ev.translations[l] ?? "—")") }
         }
     }
 
@@ -205,6 +244,6 @@ func run(session: TranslationSession,
         }
     }
 
-    status("live · \(lang) · mask-k \(cfg.maskK)")
+    status("live · \(langs.joined(separator: ", ")) · mask-k \(cfg.maskK)")
     note("listening.")
 }

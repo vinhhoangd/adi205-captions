@@ -56,7 +56,7 @@ func runBench(session: TranslationSession) async -> Int32 {
     cfg.maskK = Int(env["BENCH_MASK_K"] ?? "") ?? 3
     cfg.enableCorrection = (env["BENCH_CORRECTION"] ?? "0") == "1"
     cfg.correctionConfidenceThreshold = Double(env["BENCH_CONF"] ?? "") ?? 0.75
-    cfg.targetLanguage = env["BENCH_LANG"] ?? "vi"
+    cfg.targetLanguages = [env["BENCH_LANG"] ?? "vi"]
     let chunkMS = Double(env["BENCH_CHUNK_MS"] ?? "") ?? 50
 
     let glossary = (env["BENCH_GLOSSARY"] ?? "")
@@ -80,7 +80,9 @@ func runBench(session: TranslationSession) async -> Int32 {
     let transcriber = setup.transcriber
     let format = setup.format
 
-    let pipeline = CaptionPipeline(config: cfg, translator: session, glossary: glossary)
+    let pipeline = CaptionPipeline(config: cfg,
+                                   translators: [cfg.targetLanguages[0]: session],
+                                   glossary: glossary)
 
     let collector = EventCollector()
     pipeline.onEvent { ev in collector.add(ev) }
@@ -187,7 +189,7 @@ func runBench(session: TranslationSession) async -> Int32 {
     print("")
     for f in finals {
         print("  EN  \(f.english)")
-        print("  \(cfg.targetLanguage.uppercased())  \(f.translation)")
+        print("  \(cfg.targetLanguages[0].uppercased())  \(f.translation)")
         print(String(format: "      final latency %.0f ms · min confidence %.2f%@",
                      f.latency * 1000, f.confidence, f.corrected ? " · corrected" : ""))
         print("")

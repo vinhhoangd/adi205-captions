@@ -39,7 +39,7 @@ case .unavailable(let reason): line("SystemLanguageModel", false, "unavailable: 
 print("\n[4] Translation")
 let avail = LanguageAvailability()
 let src = Locale.Language(identifier: "en")
-for (name, id) in [("Vietnamese", "vi"), ("Chinese (Simplified)", "zh-Hans")] {
+for (name, id) in [("Vietnamese", "vi"), ("Chinese (Simplified)", "zh-Hans"), ("Chinese (Traditional)", "zh-Hant"), ("Chinese (generic)", "zh")] {
     let status = await avail.status(from: src, to: Locale.Language(identifier: id))
     switch status {
     case .installed:   line(name, true,  "installed")

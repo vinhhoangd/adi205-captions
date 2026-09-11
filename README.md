@@ -32,6 +32,18 @@ http://10.11.20.156:8420     # anyone on the same Wi-Fi
 
 Live log: `tail -f /tmp/captiond.log`
 
+### Languages
+
+Captions are produced in Vietnamese, Simplified Chinese and Traditional Chinese
+at once. The page has a tab per language plus **All**, which stacks every
+translation under the English line with a label. The choice is remembered per
+viewer, so two people watching the same session can read different languages.
+
+Each language costs one translation call per update. They are issued
+concurrently rather than in sequence — three sequential calls would triple the
+translated line's latency, which is already the largest item in the budget.
+Restrict the set with `CAPTION_LANGS=vi` if a machine struggles.
+
 ### The caption page
 
 Plain HTML with no framework and no build step, so it opens unchanged on macOS,
@@ -69,7 +81,7 @@ selected.**
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CAPTION_LANG` | `vi` | Target language (`vi`, `zh-Hans`) |
+| `CAPTION_LANGS` | `vi,zh-Hans,zh-Hant` | Target languages, comma-separated |
 | `CAPTION_PORT` | `8420` | HTTP port |
 | `CAPTION_MASK_K` | `3` | Words held back from the translated line |
 | `CAPTION_CHUNK_MS` | `50` | Capture granularity |

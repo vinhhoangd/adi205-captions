@@ -5,8 +5,21 @@ import Foundation
 /// plain HTML with no framework and no build step, which is what lets it open on
 /// a Mac, an Ubuntu laptop, a Windows machine or a phone without changes.
 public enum CaptionPage {
-    public static func html(target: String) -> String {
-        let targetName = target.hasPrefix("zh") ? "中文" : "Tiếng Việt"
+    /// Human-readable label for a language code, used on the tabs.
+    public static func label(_ code: String) -> String {
+        switch code {
+        case "vi": return "Tiếng Việt"
+        case "zh-Hans": return "简体中文"
+        case "zh-Hant": return "繁體中文"
+        default: return code
+        }
+    }
+
+    public static func html(languages: [String]) -> String {
+        let tabs = languages.map {
+            "{code:\"\($0)\",label:\"\(label($0))\"}"
+        }.joined(separator: ",")
+        let firstName = languages.first.map(label) ?? "the translation"
         return """
         <!doctype html>
         <html lang="en"><head>
@@ -110,6 +123,30 @@ public enum CaptionPage {
           .wave.active b{background:var(--accent)}
           #emptyTitle{font-size:19px;font-weight:600;color:var(--ink)}
           #emptyHint{font-size:14px;text-align:center;max-width:40ch;line-height:1.5}
+
+          /* ── language tabs ──────────────────────────── */
+          .tabs{
+            display:flex; gap:4px; flex:none; padding:8px 20px;
+            border-bottom:1px solid var(--line); background:var(--panel);
+            overflow-x:auto; scrollbar-width:none;
+          }
+          .tabs::-webkit-scrollbar{display:none}
+          .tab{
+            font:inherit; font-size:13px; font-weight:600; white-space:nowrap;
+            color:var(--dim); background:transparent; border:1px solid transparent;
+            border-radius:7px; padding:5px 13px; cursor:pointer;
+          }
+          .tab:hover{color:var(--ink)}
+          .tab[aria-selected="true"]{
+            color:var(--bg); background:var(--accent); border-color:var(--accent);
+          }
+          .tab:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+          /* In "All" the per-language lines need their own label */
+          .trrow{display:flex;gap:10px;align-items:baseline}
+          .trlang{
+            flex:none; font-size:11px; font-weight:700; letter-spacing:.04em;
+            color:var(--faint); min-width:5.5em; padding-top:.35em;
+          }
           .kbd{
             font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
             border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--ink);
@@ -131,13 +168,15 @@ public enum CaptionPage {
           </span>
         </header>
 
+        <div class="tabs" id="tabs" role="tablist"></div>
+
         <div class="alert" id="alert"><span>⚠</span><span id="alertText"></span></div>
 
         <div id="empty">
           <div class="wave" id="wave"><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
           <div id="emptyTitle">Listening</div>
           <div id="emptyHint">Speak toward the microphone. English appears first, \
-        \(targetName) follows about a second later.</div>
+        \(firstName) follows about a second later.</div>
         </div>
 
         <div id="feed" hidden></div>
@@ -151,6 +190,63 @@ public enum CaptionPage {
           var alertBox=document.getElementById('alert'), alertText=document.getElementById('alertText');
           var wave=document.getElementById('wave'), bars=wave.querySelectorAll('b');
           var size=34, follow=true, live=null, started=false;
+          var LANGS=[\(tabs)];
+          var view='all';   // 'all' or a single language code
+
+          // Tabs: one per language, plus "All" when there is more than one.
+          var tabBar=document.getElementById('tabs');
+          function buildTabs(){
+            var items=LANGS.slice();
+            if(LANGS.length>1) items.push({code:'all',label:'All'});
+            items.forEach(function(it){
+              var b=document.createElement('button');
+              b.className='tab'; b.textContent=it.label; b.dataset.code=it.code;
+              b.setAttribute('role','tab');
+              b.onclick=function(){ select(it.code); };
+              tabBar.appendChild(b);
+            });
+            var saved=null;
+            try{ saved=localStorage.getItem('capView'); }catch(e){}
+            select(saved && items.some(function(i){return i.code===saved}) ? saved
+                   : (LANGS.length>1 ? 'all' : LANGS[0].code));
+          }
+          function select(code){
+            view=code;
+            try{ localStorage.setItem('capView',code); }catch(e){}
+            Array.prototype.forEach.call(tabBar.children,function(b){
+              b.setAttribute('aria-selected', String(b.dataset.code===code));
+            });
+            // Re-render every line already on screen for the new selection.
+            Array.prototype.forEach.call(document.querySelectorAll('.line'),function(l){
+              renderTranslations(l, JSON.parse(l.dataset.tr||'{}'));
+            });
+            scroll();
+          }
+
+          // One translation line per language in "All", otherwise just the one.
+          function renderTranslations(lineEl, trMap){
+            var box=lineEl.querySelector('.trbox');
+            box.innerHTML='';
+            var codes = (view==='all') ? LANGS.map(function(l){return l.code}) : [view];
+            codes.forEach(function(code){
+              var text=trMap[code];
+              if(!text) return;
+              if(view==='all'){
+                var row=document.createElement('div'); row.className='trrow';
+                var lab=document.createElement('span'); lab.className='trlang';
+                lab.textContent=labelFor(code);
+                var p=document.createElement('p'); p.className='tr'; p.textContent=text;
+                row.appendChild(lab); row.appendChild(p); box.appendChild(row);
+              }else{
+                var q=document.createElement('p'); q.className='tr'; q.textContent=text;
+                box.appendChild(q);
+              }
+            });
+          }
+          function labelFor(code){
+            for(var i=0;i<LANGS.length;i++) if(LANGS[i].code===code) return LANGS[i].label;
+            return code;
+          }
 
           function setSize(n){
             size=Math.max(18,Math.min(80,n));
@@ -177,7 +273,8 @@ public enum CaptionPage {
             if(!started){ started=true; empty.classList.add('hide'); feed.hidden=false; }
             if(!live){
               live=document.createElement('div'); live.className='line';
-              live.innerHTML='<p class="en live"></p><p class="tr"></p>';
+              live.innerHTML='<p class="en live"></p><div class="trbox"></div>';
+              live.dataset.tr='{}';
               feed.appendChild(live);
             }
             return live;
@@ -196,6 +293,7 @@ public enum CaptionPage {
             }
           }
 
+          buildTabs();
           var es=new EventSource('/events');
           es.onopen=function(){ dot.className='dot on'; state.textContent='live'; };
           es.onerror=function(){
@@ -223,7 +321,7 @@ public enum CaptionPage {
 
             var el=liveLine();
             if(d.en) el.querySelector('.en').textContent=d.en;
-            if(d.tr) el.querySelector('.tr').textContent=d.tr;
+            if(d.tr){ el.dataset.tr=JSON.stringify(d.tr); renderTranslations(el, d.tr); }
 
             if(d.kind==='finalized'){
               var en=el.querySelector('.en');

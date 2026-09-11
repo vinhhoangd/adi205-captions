@@ -20,7 +20,9 @@ public struct PipelineConfig: Sendable {
     public var correctionConfidenceThreshold: Double = 0.75
     /// Re-translate once the prefix has grown by this many words.
     public var retranslateEveryWords: Int = 1
-    public var targetLanguage: String = "vi"
+    /// Every language the captions are produced in. Each costs one translation
+    /// call per update; they are issued concurrently rather than in sequence.
+    public var targetLanguages: [String] = ["vi"]
     /// OFF by default, on measurement rather than principle: one on-device
     /// FoundationModels call costs ~6.5 s on this M1 Pro — a fixed overhead,
     /// identical at 30, 60 and 120 max tokens — against a 3 s total budget.
@@ -38,7 +40,10 @@ public struct CaptionEvent: Sendable {
     public enum Kind: String, Sendable { case english, translation, finalized }
     public var kind: Kind
     public var english: String
-    public var translation: String
+    /// One entry per target language, keyed by language code.
+    public var translations: [String: String]
+    /// Convenience for callers that only care about the first configured language.
+    public var translation: String { translations.values.first ?? "" }
     /// Audio-clock time of the last word this event actually displays.
     public var audioTime: Double
     /// Wall-clock latency from that word being spoken to this event.
@@ -74,7 +79,7 @@ func timedWords(_ s: AttributedString) -> [TimedWord] {
 public final class CaptionPipeline {
 
     public private(set) var config: PipelineConfig
-    private let translator: TranslationSession
+    private let translators: [String: TranslationSession]
     private var corrector: LanguageModelSession?
     private let glossary: [String]
 
@@ -89,15 +94,15 @@ public final class CaptionPipeline {
     public private(set) var correctCalls = 0
     public private(set) var correctTotalMS = 0.0
     public private(set) var confidences: [Double] = []
-    private var lastTranslation = ""
+    private var lastTranslations: [String: String] = [:]
 
     private var emit: (CaptionEvent) -> Void = { _ in }
 
     public init(config: PipelineConfig,
-                translator: TranslationSession,
+                translators: [String: TranslationSession],
                 glossary: [String] = []) {
         self.config = config
-        self.translator = translator
+        self.translators = translators
         self.glossary = glossary
     }
 
@@ -119,7 +124,7 @@ public final class CaptionPipeline {
             correctorMS = Date().timeIntervalSince(t) * 1000
         }
         let t2 = Date()
-        _ = try? await translator.translate("warm up")
+        for (_, session) in translators { _ = try? await session.translate("warm up") }
         translatorMS = Date().timeIntervalSince(t2) * 1000
         return (correctorMS, translatorMS)
     }
@@ -205,7 +210,7 @@ public final class CaptionPipeline {
         guard let last = all.last else { return }
         emit(CaptionEvent(kind: .english,
                           english: all.map(\.text).joined(separator: " "),
-                          translation: lastTranslation,
+                          translations: lastTranslations,
                           audioTime: last.end,
                           latency: latency(to: last.end),
                           corrected: false,
@@ -226,14 +231,15 @@ public final class CaptionPipeline {
 
         lastTranslatedCount = all.count
         let t0 = Date()
-        guard let vi = try? await translator.translate(source).targetText else { return }
+        let got = await translateAll(source)
+        guard !got.isEmpty else { return }
         lastTranslateMS = Date().timeIntervalSince(t0) * 1000
         translateCalls += 1
         translateTotalMS += lastTranslateMS
-        lastTranslation = vi
+        lastTranslations = got
         emit(CaptionEvent(kind: .translation,
                           english: all.map(\.text).joined(separator: " "),
-                          translation: vi,
+                          translations: got,
                           audioTime: anchor.end,
                           latency: latency(to: anchor.end),
                           corrected: false,
@@ -274,18 +280,40 @@ public final class CaptionPipeline {
         }
 
         let tf = Date()
-        let vi = (try? await translator.translate(english).targetText) ?? lastTranslation
+        var finalTr = await translateAll(english)
+        if finalTr.isEmpty { finalTr = lastTranslations }
         translateCalls += 1
         translateTotalMS += Date().timeIntervalSince(tf) * 1000
-        lastTranslation = vi
+        lastTranslations = finalTr
         emit(CaptionEvent(kind: .finalized,
                           english: english,
-                          translation: vi,
+                          translations: finalTr,
                           audioTime: last.end,
                           latency: latency(to: last.end),
                           corrected: corrected,
                           confidence: minConf))
 
+    }
+
+    /// Translates one source string into every configured language at once.
+    /// Issued concurrently: three sequential calls would triple the latency the
+    /// translated line already costs, which is the budget's largest single item.
+    private func translateAll(_ source: String) async -> [String: String] {
+        // Start every translation before awaiting any of them. A task group trips
+        // the region-isolation checker here because TranslationSession is not
+        // Sendable; these tasks inherit MainActor isolation instead, so nothing
+        // crosses an isolation boundary.
+        var started: [(String, Task<String?, Never>)] = []
+        for (lang, session) in translators {
+            started.append((lang, Task { @MainActor in
+                try? await session.translate(source).targetText
+            }))
+        }
+        var out: [String: String] = [:]
+        for (lang, task) in started {
+            if let text = await task.value { out[lang] = text }
+        }
+        return out
     }
 
     // MARK: Glossary
