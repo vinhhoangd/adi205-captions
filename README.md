@@ -11,6 +11,19 @@ on-device, with every caption pushed to any laptop or phone on the same network.
 | `bench` | Replays a WAV through the *identical* pipeline at real-time pace and reports latency. |
 | `gate` | Platform check: which Apple on-device models and language packs this Mac has. |
 
+## What you need
+
+- **macOS 26** (Tahoe) — the package targets it and the on-device models do not
+  exist before it. `gate` will tell you what a given Mac is missing.
+- **Xcode 26** for the Swift 6.2 toolchain.
+- **Apple Silicon.**
+- **Translation language packs** for the target languages. macOS downloads them
+  on first use; `swift run -c release gate` reports which are installed.
+
+Apple Intelligence is only needed if you switch the correction layer on with
+`CAPTION_CORRECTION=1`, which is off by default and, on the machine this was
+built on, costs about 6.5 s per call.
+
 ## Build and run
 
 ```bash
@@ -31,6 +44,21 @@ http://10.11.20.156:8420     # anyone on the same Wi-Fi
 ```
 
 Live log: `tail -f /tmp/captiond.log`
+
+### Reproducing the measurements
+
+The test audio is not in git — it is derived. Rebuild it, then measure:
+
+```bash
+./make_corpus.sh          # synthesises the clips and prints the reference text
+./make_app.sh bench CaptionBench
+open -a build/CaptionBench.app --args -out /tmp/bench.txt "$PWD/corpus/lecture2.wav"
+cat /tmp/bench.txt
+```
+
+Synthetic speech is deliberate: it is byte-identical on every run, so a number
+measured today is comparable with one measured next week. It is also easier than
+the truth — a real lecturer at real distance scores worse.
 
 ### Sharing it with someone off your network
 
