@@ -210,6 +210,10 @@ public enum CaptionPage {
           var alertBox=document.getElementById('alert'), alertText=document.getElementById('alertText');
           var wave=document.getElementById('wave'), bars=wave.querySelectorAll('b');
           var size=34, follow=true, live=null, started=false, capturing=false;
+          // Carry the access token (if the page was opened with one) onto the
+          // event stream and control calls, so a shared link works as one link.
+          var KEY=new URLSearchParams(location.search).get('k');
+          function url(p){ return KEY ? p+(p.indexOf('?')<0?'?':'&')+'k='+encodeURIComponent(KEY) : p; }
           var LANGS=[\(tabs)];
           var view='all';   // 'all' or a single language code
 
@@ -320,7 +324,7 @@ public enum CaptionPage {
           recBtn.onclick=function(){
             var want = capturing ? 'pause' : 'start';
             recBtn.disabled=true;
-            fetch('/control/'+want).catch(function(){}).then(function(){ recBtn.disabled=false; });
+            fetch(url('/control/'+want)).catch(function(){}).then(function(){ recBtn.disabled=false; });
           };
           function setCapturing(on){
             if(on===capturing) return;
@@ -338,7 +342,7 @@ public enum CaptionPage {
           }
 
           buildTabs();
-          var es=new EventSource('/events');
+          var es=new EventSource(url('/events'));
           es.onopen=function(){ dot.className='dot on'; state.textContent='live'; };
           es.onerror=function(){
             dot.className='dot'; state.textContent='reconnecting…';

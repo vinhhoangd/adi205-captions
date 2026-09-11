@@ -19,9 +19,15 @@ public final class CaptionServer: @unchecked Sendable {
     /// Plain GET so the page needs no CORS preflight and no request body.
     public var onControl: ((String) -> Void)?
 
-    public init(port: UInt16 = 8420, page: String) throws {
+    /// When set, every request must carry `?k=<token>`. Unset is fine on a
+    /// trusted LAN; it is NOT fine behind a public tunnel, where an open
+    /// /control/start would let any stranger switch on the microphone.
+    private let accessToken: String?
+
+    public init(port: UInt16 = 8420, page: String, accessToken: String? = nil) throws {
         self.port = port
         self.page = page
+        self.accessToken = accessToken
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
         guard let p = NWEndpoint.Port(rawValue: port) else {
@@ -47,6 +53,21 @@ public final class CaptionServer: @unchecked Sendable {
                 return
             }
             let path = head.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+
+            if let want = self.accessToken, Self.query(path, "k") != want {
+                let body = Data("forbidden".utf8)
+                let headers = """
+                HTTP/1.1 403 Forbidden\r
+                Content-Type: text/plain\r
+                Content-Length: \(body.count)\r
+                Connection: close\r
+                \r
+
+                """
+                var out = Data(headers.utf8); out.append(body)
+                conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+                return
+            }
 
             if path.hasPrefix("/control/") {
                 let action = String(path.dropFirst("/control/".count))
@@ -135,6 +156,16 @@ public final class CaptionServer: @unchecked Sendable {
                 c.cancel()
             })
         }
+    }
+
+    /// Reads one query parameter out of a request path.
+    static func query(_ path: String, _ name: String) -> String? {
+        guard let q = path.firstIndex(of: "?") else { return nil }
+        for pair in path[path.index(after: q)...].split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            if kv.count == 2, kv[0] == name { return String(kv[1]) }
+        }
+        return nil
     }
 
     public var viewerCount: Int {

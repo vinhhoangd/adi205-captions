@@ -112,13 +112,23 @@ func run(sessions: [String: TranslationSession],
     // Server first, so viewers can connect while the models warm up.
     let server: CaptionServer
     do {
-        server = try CaptionServer(port: port, page: CaptionPage.html(languages: langs))
+        let token = env["CAPTION_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
+        server = try CaptionServer(port: port,
+                                   page: CaptionPage.html(languages: langs),
+                                   accessToken: token)
         server.start()
     } catch { status("server failed: \(error)"); note("server failed: \(error)"); return }
 
-    let addrs = CaptionServer.lanAddresses().map { "http://\($0):\(port)" }
-    urls(["http://localhost:\(port)"] + addrs)
-    note("captions at: " + (["http://localhost:\(port)"] + addrs).joined(separator: "  "))
+    let suffix = (env["CAPTION_TOKEN"].flatMap { $0.isEmpty ? nil : "?k=\($0)" }) ?? ""
+    let addrs = CaptionServer.lanAddresses().map { "http://\($0):\(port)\(suffix)" }
+    let all = ["http://localhost:\(port)\(suffix)"] + addrs
+    urls(all)
+    note("captions at: " + all.joined(separator: "  "))
+    if suffix.isEmpty {
+        note("NOTE: no access token set. Fine on a trusted network; set CAPTION_TOKEN "
+           + "before exposing this beyond the LAN — /control/start is otherwise open "
+           + "to anyone who can reach the port.")
+    }
 
     // Log what inputs exist, so choosing one for the distance A/B is possible
     // without guessing at names.

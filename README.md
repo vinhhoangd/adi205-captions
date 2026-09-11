@@ -32,6 +32,27 @@ http://10.11.20.156:8420     # anyone on the same Wi-Fi
 
 Live log: `tail -f /tmp/captiond.log`
 
+### Sharing it with someone off your network
+
+The LAN address only works for people on the same Wi-Fi. For anyone else:
+
+```bash
+CAPTION_TOKEN="$(openssl rand -hex 6)" open -a build/ADI205Captions.app
+./share.sh
+```
+
+`share.sh` opens a Cloudflare tunnel and prints a public HTTPS URL. Append
+`?k=<your token>` and send that one link.
+
+**Set a token before doing this.** Without one every endpoint is open, including
+`/control/start` — anyone who guessed or was forwarded the URL could switch on
+the microphone in your room and read a live transcript. With a token set, every
+request without it gets a 403. Treat the link like a password, send it to one
+person, and stop the tunnel when you are done.
+
+On a trusted LAN a token is unnecessary and the app runs without one, logging a
+note to that effect at startup.
+
 ### Recording control
 
 **The app starts with the microphone off.** A viewer presses **Start** on the
@@ -97,6 +118,7 @@ selected.**
 |---|---|---|
 | `CAPTION_LANGS` | `vi,zh-Hans,zh-Hant` | Target languages, comma-separated |
 | `CAPTION_AUTOSTART` | `0` | `1` starts recording without pressing Start |
+| `CAPTION_TOKEN` | — | Require `?k=<token>` on every request. Set this before exposing the server beyond the LAN |
 | `CAPTION_PORT` | `8420` | HTTP port |
 | `CAPTION_MASK_K` | `3` | Words held back from the translated line |
 | `CAPTION_CHUNK_MS` | `50` | Capture granularity |
