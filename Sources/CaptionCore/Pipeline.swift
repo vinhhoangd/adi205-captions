@@ -20,6 +20,11 @@ public struct PipelineConfig: Sendable {
     public var correctionConfidenceThreshold: Double = 0.75
     /// Re-translate once the prefix has grown by this many words.
     public var retranslateEveryWords: Int = 1
+    /// Minimum gap between prefix translations. Translation calls are serial and
+    /// cost ~600 ms; words arrive faster than that during continuous speech, so
+    /// without a floor the queue saturates and the translated line drifts past
+    /// the budget even though each individual call is fast.
+    public var minRetranslateGapMS: Double = 450
     /// Every language the captions are produced in. Each costs one translation
     /// call per update; they are issued concurrently rather than in sequence.
     public var targetLanguages: [String] = ["vi"]
@@ -91,6 +96,8 @@ public final class CaptionPipeline {
     private var volatileWords: [TimedWord] = []
 
     private var lastTranslatedCount = 0
+    private var lastPrefixTranslateAt = Date.distantPast
+    private var lastResultAt = Date.distantPast
     public private(set) var translateCalls = 0
     public private(set) var translateTotalMS = 0.0
     public private(set) var lastTranslateMS = 0.0
@@ -169,19 +176,26 @@ public final class CaptionPipeline {
             streamStart = Date().addingTimeInterval(-end)
             needsRebaseline = false
         }
+        lastResultAt = Date()
         confidences.append(contentsOf: words.map(\.confidence))
         if confidences.count > 20_000 { confidences.removeFirst(confidences.count - 20_000) }
         if result.isFinal {
             committed.append(contentsOf: words)
             volatileWords = []
             let snapshot = committed
+            let lineID = lineCounter
+            // Advance immediately, not when the async finalise completes: the
+            // next utterance starts emitting English straight away, and with a
+            // stale counter its text landed in the line about to be finalised.
+            lineCounter += 1
+            lastTranslations = [:]
             committed = []
             lastTranslatedCount = 0
             // Any queued prefix translation is now superseded by the finished
             // sentence, so drop it rather than make the final line wait behind it.
             queued.removeAll()
             translationQueued = false
-            schedule { await self.finalizeUtterance(snapshot) }
+            schedule { await self.finalizeUtterance(snapshot, id: lineID) }
         } else {
             volatileWords = words
             emitEnglish(words)
@@ -257,6 +271,10 @@ public final class CaptionPipeline {
         let all = committed + volatileWords
         guard all.count - lastTranslatedCount >= config.retranslateEveryWords,
               !all.isEmpty else { return }
+        // Do not out-run the translator. Issuing faster than it completes just
+        // lengthens the queue, and the reader sees the delay, not the throughput.
+        let sinceLast = Date().timeIntervalSince(lastPrefixTranslateAt) * 1000
+        guard sinceLast >= config.minRetranslateGapMS else { return }
 
         // Hold back the newest k words: they are the least stable. But never
         // hold back everything — a fixed k of 3 meant a one- to three-word
@@ -269,6 +287,7 @@ public final class CaptionPipeline {
         let source = shown.map(\.text).joined(separator: " ")
 
         lastTranslatedCount = all.count
+        lastPrefixTranslateAt = Date()
         let t0 = Date()
         let got = await translateAll(source)
         guard !got.isEmpty else { return }
@@ -287,7 +306,7 @@ public final class CaptionPipeline {
 
     // MARK: Finalization
 
-    private func finalizeUtterance(_ words: [TimedWord]) async {
+    private func finalizeUtterance(_ words: [TimedWord], id lineID: Int) async {
         guard let last = words.last else { return }
         var english = words.map(\.text).joined(separator: " ")
         let minConf = words.map(\.confidence).min() ?? 1
@@ -333,12 +352,16 @@ public final class CaptionPipeline {
         // stay blank forever, so switching tabs showed an empty history. Fill
         // them in afterwards: the watched language is already on screen, so this
         // costs the reader nothing.
-        let lineID = lineCounter
         let missing = Set(config.targetLanguages).subtracting(finalTr.keys)
         if !missing.isEmpty {
             let sentence = english
             scheduleBackfill { [weak self] in
                 guard let self else { return }
+                // Wait for a lull. A backfill blocking the worker delays the live
+                // translated line of the sentence being spoken right now.
+                while Date().timeIntervalSince(self.lastResultAt) < 0.6 {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
                 let extra = await self.translate(sentence, into: missing)
                 guard !extra.isEmpty else { return }
                 self.emit(CaptionEvent(kind: .update, id: lineID,
@@ -357,12 +380,6 @@ public final class CaptionPipeline {
                           corrected: corrected,
                           confidence: minConf))
 
-        // Open the next line. Without this every caption shared id 0, so the page
-        // merged them into one and a backfill for one sentence landed under
-        // another. And the next line's first English frames would otherwise carry
-        // the previous sentence's translation underneath them.
-        lineCounter += 1
-        lastTranslations = [:]
     }
 
     /// Translates one source string into the languages currently being watched.

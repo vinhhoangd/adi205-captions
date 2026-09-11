@@ -112,6 +112,19 @@ public final class CaptionServer: @unchecked Sendable {
                 """
                 conn.send(content: headers.data(using: .utf8), completion: .contentProcessed { _ in })
                 self.lock.lock(); self.viewers.append(conn); self.lock.unlock()
+                // Drop the viewer as soon as the connection dies. Waiting for a
+                // send to fail leaves closed tabs on the list, which inflates the
+                // reported viewer count and wastes a write per caption.
+                conn.stateUpdateHandler = { [weak self] state in
+                    switch state {
+                    case .cancelled, .failed:
+                        guard let self else { return }
+                        self.lock.lock()
+                        self.viewers.removeAll { $0 === conn }
+                        self.lock.unlock()
+                    default: break
+                    }
+                }
             } else {
                 let body = Data(self.page.utf8)
                 let headers = """

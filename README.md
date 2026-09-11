@@ -166,6 +166,7 @@ selected.**
 |---|---|---|
 | `CAPTION_LANGS` | `vi,zh-Hans,zh-Hant` | Target languages, comma-separated |
 | `CAPTION_AUTOSTART` | `0` | `1` starts recording without pressing Start |
+| `CAPTION_MIN_GAP_MS` | `450` | Floor between prefix translations |
 | `CAPTION_TOKEN` | — | Require `?k=<token>` on every request. Set this before exposing the server beyond the LAN |
 | `CAPTION_PORT` | `8420` | HTTP port |
 | `CAPTION_MASK_K` | `3` | Words held back from the translated line |
@@ -184,8 +185,12 @@ audio-clock time of the last displayed word to the moment it is emitted.
 
 | Clip | mask-k | English median / p90 | Translated median / p90 |
 |---|---|---|---|
-| lecture1 | 3 | 38 ms / 51 ms | 938 ms / 1246 ms |
-| lecture2 | 3 | 35 ms / 46 ms | 818 ms / 1186 ms |
+| lecture1 | 3 | 38 ms / 51 ms | 924 ms / 1948 ms |
+| lecture2 | 3 | 31 ms / 49 ms | 553 ms / 1337 ms |
+
+Three repeats of each, all three languages configured, worst observed maximum
+2206 ms. Earlier single runs quoted a lower p90 than the system reliably
+delivers; these are the repeated figures.
 
 Measured with all three languages configured and one being watched, which is the
 normal case. Earlier figures for mask-k = 0 were 1735 ms and 1606 ms p90 on the

@@ -443,7 +443,13 @@ public enum CaptionPage {
 
             var el=liveLine(d.id);
             if(d.en) el.querySelector('.en').textContent=d.en;
-            if(d.tr){ el.dataset.tr=JSON.stringify(d.tr); renderTranslations(el, d.tr); }
+            if(d.tr){
+              // Merge, never replace: a backfill may already have filled in
+              // languages this event does not carry.
+              var cur=Object.assign(JSON.parse(el.dataset.tr||'{}'), d.tr);
+              el.dataset.tr=JSON.stringify(cur);
+              renderTranslations(el, cur);
+            }
 
             if(d.kind==='finalized'){
               var en=el.querySelector('.en');
