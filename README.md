@@ -32,6 +32,17 @@ http://10.11.20.156:8420     # anyone on the same Wi-Fi
 
 Live log: `tail -f /tmp/captiond.log`
 
+### The caption page
+
+Plain HTML with no framework and no build step, so it opens unchanged on macOS,
+Ubuntu, Windows and phones — that half of the system is cross-platform today.
+
+It shows a live input-level meter and the name of the microphone in use, because
+"no captions" has two very different causes: nobody is speaking, or the app is
+listening to a dead microphone. An idle waveform and a warning strip tell them
+apart at a glance. Text size is adjustable and remembered per viewer, and
+auto-scroll can be paused to read back.
+
 ### Choosing the microphone
 
 `CAPTION_DEVICE` is accepted but has no effect, and the app says so at startup.

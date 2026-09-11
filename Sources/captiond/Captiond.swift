@@ -173,6 +173,21 @@ func run(session: TranslationSession,
     _ = analyzer
 
     note("microphone tap installed, analyzer running")
+    // Push a health snapshot to every viewer once a second, so silence is
+    // visibly different from a dead microphone.
+    Task {
+        while true {
+            try? await Task.sleep(for: .milliseconds(1000))
+            let st = mic.stats
+            let dev = AudioDevices.inputs().first { $0.isDefault }?.name ?? "unknown"
+            var warn: String? = nil
+            if st.taps == 0 { warn = "No audio reaching the app" }
+            else if st.level < 0.001 { warn = "Microphone is silent — check the input device" }
+            server.broadcastStatus(level: st.level, device: dev, language: lang,
+                                   listening: true, warning: warn)
+        }
+    }
+
     // Poll capture stats off the audio thread.
     Task {
         var last = 0

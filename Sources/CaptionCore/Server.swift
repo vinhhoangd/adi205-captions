@@ -73,6 +73,20 @@ public final class CaptionServer: @unchecked Sendable {
         }
     }
 
+    /// Pushes a health snapshot to every viewer. Without this the page cannot
+    /// distinguish "nobody is speaking" from "the microphone is dead", which is
+    /// exactly the confusion a silent Bluetooth headset caused.
+    public func broadcastStatus(level: Double, device: String, language: String,
+                                listening: Bool, warning: String?) {
+        var obj: [String: Any] = [
+            "kind": "status", "level": level, "device": device,
+            "language": language, "listening": listening,
+            "viewers": viewerCount,
+        ]
+        if let warning { obj["warning"] = warning }
+        send(obj)
+    }
+
     public func broadcast(_ event: CaptionEvent) {
         let obj: [String: Any] = [
             "kind": event.kind.rawValue,
@@ -82,6 +96,10 @@ public final class CaptionServer: @unchecked Sendable {
             "corrected": event.corrected,
             "confidence": event.confidence,
         ]
+        send(obj)
+    }
+
+    private func send(_ obj: [String: Any]) {
         guard let json = try? JSONSerialization.data(withJSONObject: obj),
               let s = String(data: json, encoding: .utf8) else { return }
         let frame = Data("data: \(s)\n\n".utf8)
