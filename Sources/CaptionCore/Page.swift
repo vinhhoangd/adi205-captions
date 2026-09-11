@@ -60,6 +60,23 @@ public enum CaptionPage {
           .dot.on{background:var(--good)}
           .dot.warn{background:var(--warn)}
 
+          /* ── record button ──────────────────────────── */
+          .rec{
+            display:flex;align-items:center;gap:9px;font:inherit;font-size:13px;
+            font-weight:650;color:var(--bg);background:var(--good);
+            border:none;border-radius:8px;padding:7px 15px;cursor:pointer;
+          }
+          .rec:hover{filter:brightness(1.08)}
+          .rec.on{background:var(--bad)}
+          .rec .glyph{
+            width:11px;height:11px;flex:none;background:currentColor;
+            clip-path:polygon(0 0,100% 50%,0 100%);   /* play triangle */
+          }
+          .rec.on .glyph{border-radius:2px;clip-path:none}  /* pause → square */
+          .rec:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+          @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+          .dot.rec-on{background:var(--bad);animation:pulse 1.6s ease-in-out infinite}
+
           /* live input level — the thing that makes silence visible */
           .meter{
             width:84px;height:6px;border-radius:3px;background:var(--line);
@@ -154,6 +171,9 @@ public enum CaptionPage {
         </style></head><body>
 
         <header>
+          <button class="rec" id="rec" title="Start or pause recording">
+            <span class="glyph"></span><span id="recLabel">Start</span>
+          </button>
           <span class="grp"><span class="dot" id="dot"></span><span id="state">connecting…</span></span>
           <span class="grp" title="Microphone input level">
             <span class="meter" id="meter"><i id="meterFill"></i></span>
@@ -174,9 +194,9 @@ public enum CaptionPage {
 
         <div id="empty">
           <div class="wave" id="wave"><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
-          <div id="emptyTitle">Listening</div>
-          <div id="emptyHint">Speak toward the microphone. English appears first, \
-        \(firstName) follows about a second later.</div>
+          <div id="emptyTitle">Ready</div>
+          <div id="emptyHint">Press <strong>Start</strong> to begin transcribing. \
+        The microphone stays off until you do.</div>
         </div>
 
         <div id="feed" hidden></div>
@@ -189,7 +209,7 @@ public enum CaptionPage {
           var fill=document.getElementById('meterFill'), device=document.getElementById('device');
           var alertBox=document.getElementById('alert'), alertText=document.getElementById('alertText');
           var wave=document.getElementById('wave'), bars=wave.querySelectorAll('b');
-          var size=34, follow=true, live=null, started=false;
+          var size=34, follow=true, live=null, started=false, capturing=false;
           var LANGS=[\(tabs)];
           var view='all';   // 'all' or a single language code
 
@@ -293,6 +313,30 @@ public enum CaptionPage {
             }
           }
 
+          // Recording control. The server owns the truth; the button sends an
+          // intent and the next status event confirms what actually happened.
+          var recBtn=document.getElementById('rec'), recLabel=document.getElementById('recLabel');
+          var emptyTitle=document.getElementById('emptyTitle'), emptyHint=document.getElementById('emptyHint');
+          recBtn.onclick=function(){
+            var want = capturing ? 'pause' : 'start';
+            recBtn.disabled=true;
+            fetch('/control/'+want).catch(function(){}).then(function(){ recBtn.disabled=false; });
+          };
+          function setCapturing(on){
+            if(on===capturing) return;
+            capturing=on;
+            recBtn.classList.toggle('on',on);
+            recLabel.textContent=on?'Pause':'Start';
+            if(!started){
+              emptyTitle.textContent = on ? 'Listening' : 'Ready';
+              emptyHint.innerHTML = on
+                ? 'Speak toward the microphone. English appears first, \
+        \(firstName) follows about a second later.'
+                : 'Press <strong>Start</strong> to begin transcribing. \
+        The microphone stays off until you do.';
+            }
+          }
+
           buildTabs();
           var es=new EventSource('/events');
           es.onopen=function(){ dot.className='dot on'; state.textContent='live'; };
@@ -305,15 +349,21 @@ public enum CaptionPage {
             var d=JSON.parse(ev.data);
 
             if(d.kind==='status'){
+              setCapturing(!!d.capturing);
               showLevel(d.level||0);
               device.textContent=d.device||'';
+              if(!d.capturing){
+                dot.className='dot'; state.textContent='paused';
+                alertBox.classList.remove('show');
+                return;
+              }
               if(d.warning){
                 dot.className='dot warn';
                 alertText.textContent=d.warning;
                 alertBox.classList.add('show');
                 state.textContent='no audio';
               }else{
-                dot.className='dot on'; state.textContent='live';
+                dot.className='dot rec-on'; state.textContent='recording';
                 alertBox.classList.remove('show');
               }
               return;

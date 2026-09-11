@@ -15,6 +15,9 @@ public final class CaptionServer: @unchecked Sendable {
     private let lock = NSLock()
     public let port: UInt16
     private let page: String
+    /// Called with "start" or "pause" when a viewer presses the button.
+    /// Plain GET so the page needs no CORS preflight and no request body.
+    public var onControl: ((String) -> Void)?
 
     public init(port: UInt16 = 8420, page: String) throws {
         self.port = port
@@ -44,6 +47,24 @@ public final class CaptionServer: @unchecked Sendable {
                 return
             }
             let path = head.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+
+            if path.hasPrefix("/control/") {
+                let action = String(path.dropFirst("/control/".count))
+                    .prefix(while: { $0 != "?" })
+                self.onControl?(String(action))
+                let body = Data("{\"ok\":true}".utf8)
+                let headers = """
+                HTTP/1.1 200 OK\r
+                Content-Type: application/json\r
+                Content-Length: \(body.count)\r
+                Connection: close\r
+                \r
+
+                """
+                var out = Data(headers.utf8); out.append(body)
+                conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+                return
+            }
 
             if path.hasPrefix("/events") {
                 let headers = """
@@ -80,7 +101,7 @@ public final class CaptionServer: @unchecked Sendable {
                                 listening: Bool, warning: String?) {
         var obj: [String: Any] = [
             "kind": "status", "level": level, "device": device,
-            "language": language, "listening": listening,
+            "language": language, "capturing": listening,
             "viewers": viewerCount,
         ]
         if let warning { obj["warning"] = warning }

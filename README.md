@@ -32,6 +32,20 @@ http://10.11.20.156:8420     # anyone on the same Wi-Fi
 
 Live log: `tail -f /tmp/captiond.log`
 
+### Recording control
+
+**The app starts with the microphone off.** A viewer presses **Start** on the
+caption page to begin and **Pause** to stop; the button turns red and the status
+dot pulses while recording.
+
+Pause stops the audio engine rather than capturing and discarding — the macOS
+microphone indicator goes out, and the tap stops firing. That is the only honest
+meaning of "paused" for a microphone pointed at a room full of people who did not
+choose to be recorded. The latency clock is re-anchored on resume, because the
+analyzer's audio clock does not advance while paused but wall clock does.
+
+Set `CAPTION_AUTOSTART=1` to begin recording immediately on launch.
+
 ### Languages
 
 Captions are produced in Vietnamese, Simplified Chinese and Traditional Chinese
@@ -82,6 +96,7 @@ selected.**
 | Variable | Default | Meaning |
 |---|---|---|
 | `CAPTION_LANGS` | `vi,zh-Hans,zh-Hant` | Target languages, comma-separated |
+| `CAPTION_AUTOSTART` | `0` | `1` starts recording without pressing Start |
 | `CAPTION_PORT` | `8420` | HTTP port |
 | `CAPTION_MASK_K` | `3` | Words held back from the translated line |
 | `CAPTION_CHUNK_MS` | `50` | Capture granularity |

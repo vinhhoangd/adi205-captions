@@ -174,6 +174,19 @@ func run(sessions: [String: TranslationSession],
                         deviceID: chosenDevice)
     mic.onLog = { m in note("mic: \(m)") }
     mic.onRebaseline = { Task { @MainActor in pipeline.requestRebaseline() } }
+
+    server.onControl = { action in
+        Task { @MainActor in
+            switch action {
+            case "start":
+                do { try mic.resume(); status("recording · \(langs.joined(separator: ", "))") }
+                catch { note("could not start capture: \(error)") }
+            case "pause":
+                mic.pause(); status("paused")
+            default: note("unknown control: \(action)")
+            }
+        }
+    }
     let stream: AsyncStream<AnalyzerInput>
     do { stream = try mic.start() }
     catch { status("microphone: \(error)"); note("microphone: \(error)"); return }
@@ -211,7 +224,12 @@ func run(sessions: [String: TranslationSession],
     // the audio between them.
     _ = analyzer
 
-    note("microphone tap installed, analyzer running")
+    if (env["CAPTION_AUTOSTART"] ?? "0") == "1" {
+        try? mic.resume()
+        note("autostart: recording")
+    } else {
+        note("ready — paused until a viewer presses Start")
+    }
     // Push a health snapshot to every viewer once a second, so silence is
     // visibly different from a dead microphone.
     Task {
@@ -220,10 +238,12 @@ func run(sessions: [String: TranslationSession],
             let st = mic.stats
             let dev = AudioDevices.inputs().first { $0.isDefault }?.name ?? "unknown"
             var warn: String? = nil
-            if st.taps == 0 { warn = "No audio reaching the app" }
-            else if st.level < 0.001 { warn = "Microphone is silent — check the input device" }
-            server.broadcastStatus(level: st.level, device: dev, language: lang,
-                                   listening: true, warning: warn)
+            if mic.capturing {
+                if st.taps == 0 { warn = "No audio reaching the app" }
+                else if st.level < 0.001 { warn = "Microphone is silent — check the input device" }
+            }
+            server.broadcastStatus(level: mic.capturing ? st.level : 0, device: dev,
+                                   language: lang, listening: mic.capturing, warning: warn)
         }
     }
 
@@ -234,7 +254,8 @@ func run(sessions: [String: TranslationSession],
             try? await Task.sleep(for: .seconds(5))
             let st = mic.stats
             var flag = ""
-            if st.taps == last { flag = "  <- TAP NOT FIRING" }
+            if !mic.capturing { flag = "  (paused)" }
+            else if st.taps == last { flag = "  <- TAP NOT FIRING" }
             else if st.converted == 0 { flag = "  <- CONVERSION FAILING" }
             else if st.level < 0.001 { flag = "  <- silent" }
             note(String(format: "capture: %d taps (+%d), %d converted, peak %.4f%@%@",
@@ -244,6 +265,6 @@ func run(sessions: [String: TranslationSession],
         }
     }
 
-    status("live · \(langs.joined(separator: ", ")) · mask-k \(cfg.maskK)")
+    status(mic.capturing ? "recording · \(langs.joined(separator: ", "))" : "paused — press Start")
     note("listening.")
 }

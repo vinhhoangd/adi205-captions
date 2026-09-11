@@ -21,6 +21,12 @@ public final class MicSource: @unchecked Sendable {
 
     /// Wall-clock instant the first sample was captured; the zero point for latency.
     public private(set) var startDate: Date?
+
+    /// Whether audio is actually being captured. False means the engine is not
+    /// running at all — the macOS microphone indicator goes out — rather than
+    /// captured-and-discarded, which is the only honest meaning of "paused" for
+    /// a microphone pointed at a room full of people.
+    public private(set) var capturing = false
     public var onLog: (@Sendable (String) -> Void)?
     /// Fired when capture restarts, so latency can be measured from a fresh zero.
     public var onRebaseline: (@Sendable () -> Void)?
@@ -129,8 +135,7 @@ public final class MicSource: @unchecked Sendable {
         }
 
         engine.prepare()
-        try engine.start()
-        onLog?("engine running: \(engine.isRunning), device \(currentInputName())")
+        onLog?("capture ready (paused), device \(currentInputName())")
         return stream
     }
 
@@ -143,6 +148,9 @@ public final class MicSource: @unchecked Sendable {
         let tapFrames = AVAudioFrameCount(hwFormat.sampleRate * chunkMS / 1000.0)
         input.installTap(onBus: 0, bufferSize: tapFrames, format: hwFormat) { [weak self] buf, _ in
             guard let self, let conv = self.converter else { return }
+            // Paused: drop anything the engine delivers while it winds down, so
+            // no audio from a paused session can reach the recogniser.
+            guard self.capturing else { return }
             // The configuration-change notification can arrive before the hardware
             // has settled, so the converter may have been rebuilt against the old
             // device's format. Feeding 48 kHz frames through a 16 kHz converter
@@ -189,6 +197,24 @@ public final class MicSource: @unchecked Sendable {
         }
     }
 
+    /// Begins capturing. The latency clock is re-anchored because the analyzer's
+    /// audio clock does not advance while paused but wall clock does.
+    public func resume() throws {
+        guard !capturing else { return }
+        if !engine.isRunning { try engine.start() }
+        capturing = true
+        startDate = nil
+        onRebaseline?()
+        onLog?("capturing")
+    }
+
+    public func pause() {
+        guard capturing else { return }
+        capturing = false
+        engine.pause()
+        onLog?("paused")
+    }
+
     /// Re-attaches the tap after the hardware changed. Keeps the same output
     /// stream, so the analyzer never sees an interruption.
     private func rebuild() {
@@ -201,7 +227,7 @@ public final class MicSource: @unchecked Sendable {
         }
         converter = conv
         installTap(hwFormat: hw)
-        if !engine.isRunning { try? engine.start() }
+        if capturing, !engine.isRunning { try? engine.start() }
         // The analyzer's audio clock keeps counting across a rebuild while wall
         // clock does not, so the latency baseline has to be re-anchored.
         onRebaseline?()
