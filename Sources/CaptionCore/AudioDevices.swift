@@ -104,6 +104,17 @@ public enum AudioDevices {
         return au.deviceID == id
     }
 
+    /// Makes a device the system default input. AVAudioEngine follows the system
+    /// default through an aggregate device, so this is the only selection that
+    /// actually takes effect — setting deviceID on the input node is ignored.
+    @discardableResult
+    public static func setSystemDefaultInput(_ id: AudioDeviceID) -> Bool {
+        var a = addr(kAudioHardwarePropertyDefaultInputDevice)
+        var target = id
+        return AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil,
+                                          UInt32(MemoryLayout<AudioDeviceID>.size), &target) == noErr
+    }
+
     /// The device the engine is *actually* reading from, which is not necessarily
     /// the system default — the whole point of pinning one.
     public static func engineInput(_ engine: AVAudioEngine) -> String {

@@ -18,6 +18,9 @@ public final class CaptionServer: @unchecked Sendable {
     /// Called with "start" or "pause" when a viewer presses the button.
     /// Plain GET so the page needs no CORS preflight and no request body.
     public var onControl: ((String) -> Void)?
+    /// Reports which language a viewer has selected, so only that one is
+    /// translated. "all" means every configured language.
+    public var onViewing: ((String) -> Void)?
 
     /// When set, every request must carry `?k=<token>`. Unset is fine on a
     /// trusted LAN; it is NOT fine behind a public tunnel, where an open
@@ -65,6 +68,16 @@ public final class CaptionServer: @unchecked Sendable {
 
                 """
                 var out = Data(headers.utf8); out.append(body)
+                conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
+                return
+            }
+
+            if path.hasPrefix("/viewing/") {
+                let code = String(path.dropFirst("/viewing/".count)).prefix(while: { $0 != "?" })
+                self.onViewing?(String(code))
+                let body = Data("{\"ok\":true}".utf8)
+                var out = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8)
+                out.append(body)
                 conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
                 return
             }
@@ -119,11 +132,12 @@ public final class CaptionServer: @unchecked Sendable {
     /// distinguish "nobody is speaking" from "the microphone is dead", which is
     /// exactly the confusion a silent Bluetooth headset caused.
     public func broadcastStatus(level: Double, device: String, language: String,
-                                listening: Bool, warning: String?) {
+                                listening: Bool, warning: String?,
+                                devices: [[String: Any]] = []) {
         var obj: [String: Any] = [
             "kind": "status", "level": level, "device": device,
             "language": language, "capturing": listening,
-            "viewers": viewerCount,
+            "viewers": viewerCount, "devices": devices,
         ]
         if let warning { obj["warning"] = warning }
         send(obj)

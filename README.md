@@ -102,10 +102,21 @@ at once. The page has a tab per language plus **All**, which stacks every
 translation under the English line with a label. The choice is remembered per
 viewer, so two people watching the same session can read different languages.
 
-Each language costs one translation call per update. They are issued
-concurrently rather than in sequence — three sequential calls would triple the
-translated line's latency, which is already the largest item in the budget.
-Restrict the set with `CAPTION_LANGS=vi` if a machine struggles.
+**Only the language you are reading gets translated.** The page reports its
+selected tab and the server translates that one; opening **All** asks for all
+three and costs accordingly.
+
+This is not an optimisation, it is a correction. Translation calls were written
+to fan out concurrently and do not — the tasks are MainActor-isolated and queue
+behind one another. Measured on the same clip:
+
+| Languages translated | Per call | Translated line p90 |
+|---|---|---|
+| 1 | 680 ms | 1,265 ms |
+| 3 | 1,976 ms | 3,854 ms |
+
+Three is a near-exact 3x, and it breaks the 3-second requirement. Since the cost
+is linear in the number of languages, the fix is to ask for fewer.
 
 ### The caption page
 
@@ -119,6 +130,15 @@ apart at a glance. Text size is adjustable and remembered per viewer, and
 auto-scroll can be paused to read back.
 
 ### Choosing the microphone
+
+There is a microphone picker in the page header; it lists every input and
+switches at runtime, so a headset connecting mid-session is one click to adopt
+or ignore.
+
+It works by setting the **system** default input, which is the only selection
+that takes effect — see below.
+
+### Why selection has to be system-wide
 
 `CAPTION_DEVICE` is accepted but has no effect, and the app says so at startup.
 `AVAudioEngine` reads through a `CADefaultDeviceAggregate` that follows the
@@ -164,10 +184,12 @@ audio-clock time of the last displayed word to the moment it is emitted.
 
 | Clip | mask-k | English median / p90 | Translated median / p90 |
 |---|---|---|---|
-| lecture1 | 3 | 23 ms / 49 ms | 972 ms / 1285 ms |
-| lecture1 | 0 | 34 ms / 49 ms | 1026 ms / 1735 ms |
-| lecture2 | 3 | 38 ms / 45 ms | 857 ms / 1190 ms |
-| lecture2 | 0 | 32 ms / 47 ms | 795 ms / 1606 ms |
+| lecture1 | 3 | 38 ms / 51 ms | 938 ms / 1246 ms |
+| lecture2 | 3 | 35 ms / 46 ms | 818 ms / 1186 ms |
+
+Measured with all three languages configured and one being watched, which is the
+normal case. Earlier figures for mask-k = 0 were 1735 ms and 1606 ms p90 on the
+translated line, so mask-k = 3 remains the better setting.
 
 Against a 3-second requirement, with the worst p90 at 1.29 s.
 

@@ -13,24 +13,45 @@ func trace(_ m: String) {
 // .translationTask, so even the headless benchmark is hosted by a tiny app.
 // It prints to stdout and exits.
 
+/// Holds one TranslationSession per language, exactly as the app does, so a
+/// benchmark result describes the shipping configuration rather than a simpler
+/// one. Each closure parks to keep its session valid.
 struct BenchView: View {
-    @State private var config: TranslationSession.Configuration?
+    @State private var cfgVI: TranslationSession.Configuration?
+    @State private var cfgHans: TranslationSession.Configuration?
+    @State private var cfgHant: TranslationSession.Configuration?
+    @State private var sessions: [String: TranslationSession] = [:]
+    @State private var started = false
+
+    private var wanted: [String] {
+        (ProcessInfo.processInfo.environment["BENCH_LANGS"] ?? "vi")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     var body: some View {
         Text("bench running…")
             .frame(width: 240, height: 60)
             .task {
-                trace("view .task fired")
-                let target = ProcessInfo.processInfo.environment["BENCH_LANG"] ?? "vi"
-                config = TranslationSession.Configuration(
-                    source: Locale.Language(identifier: "en"),
-                    target: Locale.Language(identifier: target))
+                let src = Locale.Language(identifier: "en")
+                if wanted.contains("vi") { cfgVI = .init(source: src, target: .init(identifier: "vi")) }
+                if wanted.contains("zh-Hans") { cfgHans = .init(source: src, target: .init(identifier: "zh-Hans")) }
+                if wanted.contains("zh-Hant") { cfgHant = .init(source: src, target: .init(identifier: "zh-Hant")) }
             }
-            .translationTask(config) { session in
-                trace("translationTask fired — session ready")
-                let code = await runBench(session: session)
-                exit(code)
-            }
+            .translationTask(cfgVI)   { s in await hold("vi", s) }
+            .translationTask(cfgHans) { s in await hold("zh-Hans", s) }
+            .translationTask(cfgHant) { s in await hold("zh-Hant", s) }
+    }
+
+    @MainActor
+    private func hold(_ lang: String, _ session: TranslationSession) async {
+        sessions[lang] = session
+        if !started, sessions.count == wanted.count {
+            started = true
+            let all = sessions
+            Task { @MainActor in exit(await runBench(sessions: all)) }
+        }
+        while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
     }
 }
 
@@ -44,7 +65,7 @@ func pct(_ xs: [Double], _ p: Double) -> Double {
 }
 
 @MainActor
-func runBench(session: TranslationSession) async -> Int32 {
+func runBench(sessions: [String: TranslationSession]) async -> Int32 {
     let env = ProcessInfo.processInfo.environment
     let args = CommandLine.arguments.filter { $0.hasSuffix(".wav") || $0.hasSuffix(".aiff") }
     guard let path = args.first ?? env["BENCH_WAV"] else {
@@ -56,7 +77,7 @@ func runBench(session: TranslationSession) async -> Int32 {
     cfg.maskK = Int(env["BENCH_MASK_K"] ?? "") ?? 3
     cfg.enableCorrection = (env["BENCH_CORRECTION"] ?? "0") == "1"
     cfg.correctionConfidenceThreshold = Double(env["BENCH_CONF"] ?? "") ?? 0.75
-    cfg.targetLanguages = [env["BENCH_LANG"] ?? "vi"]
+    cfg.targetLanguages = Array(sessions.keys).sorted()
     let chunkMS = Double(env["BENCH_CHUNK_MS"] ?? "") ?? 50
 
     let glossary = (env["BENCH_GLOSSARY"] ?? "")
@@ -80,9 +101,7 @@ func runBench(session: TranslationSession) async -> Int32 {
     let transcriber = setup.transcriber
     let format = setup.format
 
-    let pipeline = CaptionPipeline(config: cfg,
-                                   translators: [cfg.targetLanguages[0]: session],
-                                   glossary: glossary)
+    let pipeline = CaptionPipeline(config: cfg, translators: sessions, glossary: glossary)
 
     let collector = EventCollector()
     pipeline.onEvent { ev in collector.add(ev) }
@@ -163,6 +182,7 @@ func runBench(session: TranslationSession) async -> Int32 {
     print("file            \((path as NSString).lastPathComponent)")
     print(String(format: "audio           %.2f s", source.totalDuration))
     print("chunk           \(Int(chunkMS)) ms     mask-k \(cfg.maskK)     correction \(cfg.enableCorrection ? "on" : "off")")
+    print("languages       \(cfg.targetLanguages.joined(separator: ", "))")
     print("biasing         \(setup.context.contextualStrings[.general]?.count ?? 0) terms      speech detector \(setup.detector != nil ? "on" : "off")")
     print(String(format: "warm-up         corrector %.0f ms · translator %.0f ms", warmCorrMS, warmTransMS))
     print("                (paid once at launch — this is what the first spoken")
@@ -189,7 +209,7 @@ func runBench(session: TranslationSession) async -> Int32 {
     print("")
     for f in finals {
         print("  EN  \(f.english)")
-        print("  \(cfg.targetLanguages[0].uppercased())  \(f.translation)")
+        for l in cfg.targetLanguages { print("  \(l)  \(f.translations[l] ?? "—")") }
         print(String(format: "      final latency %.0f ms · min confidence %.2f%@",
                      f.latency * 1000, f.confidence, f.corrected ? " · corrected" : ""))
         print("")

@@ -88,6 +88,13 @@ public enum CaptionPage {
           }
           .meter.quiet i{background:var(--warn)}
           .spacer{flex:1}
+          select#device{
+            font:inherit;font-size:13px;color:var(--dim);background:transparent;
+            border:1px solid var(--line);border-radius:6px;padding:3px 6px;
+            max-width:210px;cursor:pointer;
+          }
+          select#device:hover{color:var(--ink)}
+          select#device:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
           .lat{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
           .lat.slow{color:var(--warn)}
           button{
@@ -177,7 +184,7 @@ public enum CaptionPage {
           <span class="grp"><span class="dot" id="dot"></span><span id="state">connecting…</span></span>
           <span class="grp" title="Microphone input level">
             <span class="meter" id="meter"><i id="meterFill"></i></span>
-            <span id="device">—</span>
+            <select id="device" title="Microphone"><option>—</option></select>
           </span>
           <span class="spacer"></span>
           <span class="grp"><span class="lat" id="lat">—</span></span>
@@ -206,7 +213,7 @@ public enum CaptionPage {
           var feed=document.getElementById('feed'), empty=document.getElementById('empty');
           var dot=document.getElementById('dot'), state=document.getElementById('state');
           var lat=document.getElementById('lat'), meter=document.getElementById('meter');
-          var fill=document.getElementById('meterFill'), device=document.getElementById('device');
+          var fill=document.getElementById('meterFill');
           var alertBox=document.getElementById('alert'), alertText=document.getElementById('alertText');
           var wave=document.getElementById('wave'), bars=wave.querySelectorAll('b');
           var size=34, follow=true, live=null, started=false, capturing=false;
@@ -236,6 +243,9 @@ public enum CaptionPage {
           }
           function select(code){
             view=code;
+            // Translation calls are serial, so the server only translates what
+            // someone actually has open.
+            fetch(url('/viewing/'+code)).catch(function(){});
             try{ localStorage.setItem('capView',code); }catch(e){}
             Array.prototype.forEach.call(tabBar.children,function(b){
               b.setAttribute('aria-selected', String(b.dataset.code===code));
@@ -341,6 +351,24 @@ public enum CaptionPage {
             }
           }
 
+          var devSel=document.getElementById('device'), devKnown='';
+          devSel.onchange=function(){
+            fetch(url('/control/device/'+encodeURIComponent(devSel.value))).catch(function(){});
+          };
+          function renderDevices(list, current){
+            if(!list || !list.length) return;
+            var sig=list.map(function(d){return d.name}).join('|')+'::'+current;
+            if(sig===devKnown) return;     // don't fight the user mid-selection
+            devKnown=sig;
+            devSel.innerHTML='';
+            list.forEach(function(d){
+              var o=document.createElement('option');
+              o.value=d.name; o.textContent=d.name;
+              if(d.current) o.selected=true;
+              devSel.appendChild(o);
+            });
+          }
+
           buildTabs();
           var es=new EventSource(url('/events'));
           es.onopen=function(){ dot.className='dot on'; state.textContent='live'; };
@@ -355,7 +383,7 @@ public enum CaptionPage {
             if(d.kind==='status'){
               setCapturing(!!d.capturing);
               showLevel(d.level||0);
-              device.textContent=d.device||'';
+              renderDevices(d.devices, d.device||'');
               if(!d.capturing){
                 dot.className='dot'; state.textContent='paused';
                 alertBox.classList.remove('show');

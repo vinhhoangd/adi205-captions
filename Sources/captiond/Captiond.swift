@@ -161,7 +161,9 @@ func run(sessions: [String: TranslationSession],
         viewers(server.viewerCount)
         if ev.kind == .finalized {
             finals += 1
-            note(String(format: "#%d [%.0f ms] EN: %@", finals, ev.latency * 1000, ev.english))
+            note(String(format: "#%d [%.0f ms total · %.0f ms translating %d langs] EN: %@",
+                        finals, ev.latency * 1000, pipeline.lastTranslateMS,
+                        cfg.targetLanguages.count, ev.english))
             for l in langs { note("        \(l): \(ev.translations[l] ?? "—")") }
         }
     }
@@ -184,8 +186,30 @@ func run(sessions: [String: TranslationSession],
                         deviceID: chosenDevice)
     mic.onLog = { m in note("mic: \(m)") }
     mic.onRebaseline = { Task { @MainActor in pipeline.requestRebaseline() } }
+    pipeline.audioClock = { [weak mic] t in mic?.wallClock(forAudioTime: t) }
+
+    // Which languages viewers have open. Anything nobody is reading is not
+    // translated, because translation calls are serial and linear in count.
+    let viewing = ViewingTracker()
+    server.onViewing = { code in
+        let set: Set<String> = (code == "all") ? Set(langs) : [code]
+        viewing.note(set)
+        Task { @MainActor in pipeline.setActiveLanguages(viewing.active(all: Set(langs))) }
+    }
 
     server.onControl = { action in
+        // Microphone selection: /control/device/<substring of the device name>
+        if action.hasPrefix("device/") {
+            let want = String(action.dropFirst("device/".count))
+                .replacingOccurrences(of: "%20", with: " ")
+            if let d = AudioDevices.find(matching: want),
+               AudioDevices.setSystemDefaultInput(d.id) {
+                note("input switched to \(d.name)")
+            } else {
+                note("no input matching \"\(want)\"")
+            }
+            return
+        }
         Task { @MainActor in
             switch action {
             case "start":
@@ -240,6 +264,9 @@ func run(sessions: [String: TranslationSession],
     } else {
         note("ready — paused until a viewer presses Start")
     }
+    // Report the available inputs so the page can offer a picker.
+    let deviceList = { AudioDevices.inputs().map { ["name": $0.name, "current": $0.isDefault] } }
+
     // Push a health snapshot to every viewer once a second, so silence is
     // visibly different from a dead microphone.
     Task {
@@ -253,7 +280,8 @@ func run(sessions: [String: TranslationSession],
                 else if st.level < 0.001 { warn = "Microphone is silent — check the input device" }
             }
             server.broadcastStatus(level: mic.capturing ? st.level : 0, device: dev,
-                                   language: lang, listening: mic.capturing, warning: warn)
+                                   language: lang, listening: mic.capturing, warning: warn,
+                                   devices: deviceList())
         }
     }
 

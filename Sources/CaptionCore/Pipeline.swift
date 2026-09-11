@@ -96,6 +96,15 @@ public final class CaptionPipeline {
     public private(set) var confidences: [Double] = []
     private var lastTranslations: [String: String] = [:]
 
+    /// Languages a viewer is actually looking at. Translation calls do not
+    /// overlap — measured at 680 ms for one language and 1976 ms for three, a
+    /// near-exact 3x — so translating a language nobody is reading spends the
+    /// latency budget on nothing. Empty means "just the first configured one".
+    private var activeLanguages: Set<String> = []
+    public func setActiveLanguages(_ langs: Set<String>) {
+        activeLanguages = langs.filter { translators.keys.contains($0) }
+    }
+
     private var emit: (CaptionEvent) -> Void = { _ in }
 
     public init(config: PipelineConfig,
@@ -130,6 +139,12 @@ public final class CaptionPipeline {
     }
 
     public func setStreamStart(_ d: Date) { streamStart = d }
+
+    /// Supplies the audio-clock-to-wall-clock mapping. Without it latency is
+    /// measured against a fixed start time, which drifts by the total duration
+    /// of every silence the speech gate removed — inflating a short utterance
+    /// after a long pause by the whole pause.
+    public var audioClock: (@Sendable (Double) -> Date?)?
 
     /// Re-anchor the latency clock on the next result. Used after capture is
     /// rebuilt: the analyzer's audio clock survives the restart, wall clock does
@@ -236,7 +251,7 @@ public final class CaptionPipeline {
         lastTranslateMS = Date().timeIntervalSince(t0) * 1000
         translateCalls += 1
         translateTotalMS += lastTranslateMS
-        lastTranslations = got
+        lastTranslations = lastTranslations.merging(got) { _, new in new }
         emit(CaptionEvent(kind: .translation,
                           english: all.map(\.text).joined(separator: " "),
                           translations: got,
@@ -280,7 +295,7 @@ public final class CaptionPipeline {
         }
 
         let tf = Date()
-        var finalTr = await translateAll(english)
+        var finalTr = lastTranslations.merging(await translateAll(english)) { _, new in new }
         if finalTr.isEmpty { finalTr = lastTranslations }
         translateCalls += 1
         translateTotalMS += Date().timeIntervalSince(tf) * 1000
@@ -295,16 +310,23 @@ public final class CaptionPipeline {
 
     }
 
-    /// Translates one source string into every configured language at once.
-    /// Issued concurrently: three sequential calls would triple the latency the
-    /// translated line already costs, which is the budget's largest single item.
+    /// Translates one source string into the languages currently being watched.
+    ///
+    /// These calls were written to fan out concurrently. They do not: the tasks
+    /// are MainActor-isolated and queue behind one another, measured at 680 ms
+    /// for one language against 1976 ms for three. Since the cost is linear in
+    /// the number of languages, the fix is to ask for fewer — only the ones a
+    /// viewer has open.
     private func translateAll(_ source: String) async -> [String: String] {
         // Start every translation before awaiting any of them. A task group trips
         // the region-isolation checker here because TranslationSession is not
         // Sendable; these tasks inherit MainActor isolation instead, so nothing
         // crosses an isolation boundary.
+        let wanted: Set<String> = activeLanguages.isEmpty
+            ? Set(config.targetLanguages.prefix(1))
+            : activeLanguages
         var started: [(String, Task<String?, Never>)] = []
-        for (lang, session) in translators {
+        for (lang, session) in translators where wanted.contains(lang) {
             started.append((lang, Task { @MainActor in
                 try? await session.translate(source).targetText
             }))
@@ -370,6 +392,10 @@ public final class CaptionPipeline {
 
     private func latency(to audioTime: Double) -> Double {
         guard audioTime.isFinite else { return .nan }
+        if let captured = audioClock?(audioTime) {
+            return Date().timeIntervalSince(captured)
+        }
+        // Fallback for the file bench, which feeds contiguously with no gaps.
         return Date().timeIntervalSince(streamStart.addingTimeInterval(audioTime))
     }
 
@@ -395,4 +421,30 @@ func editDistance(_ a: String, _ b: String) -> Int {
         swap(&prev, &cur)
     }
     return prev[b.count]
+}
+
+/// Tracks which languages viewers have open, with an expiry so a viewer who
+/// closes their tab stops costing translation time. Thread-safe: reports arrive
+/// on the server's queue, reads happen on the main actor.
+public final class ViewingTracker: @unchecked Sendable {
+    private var seen: [String: Date] = [:]
+    private let lock = NSLock()
+    private let ttl: TimeInterval
+
+    public init(ttl: TimeInterval = 90) { self.ttl = ttl }
+
+    public func note(_ langs: Set<String>) {
+        lock.lock(); defer { lock.unlock() }
+        let now = Date()
+        for l in langs { seen[l] = now }
+    }
+
+    /// Languages reported recently; falls back to nothing, which the pipeline
+    /// reads as "just the first configured language".
+    public func active(all: Set<String>) -> Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        let cutoff = Date().addingTimeInterval(-ttl)
+        seen = seen.filter { $0.value > cutoff }
+        return Set(seen.keys).intersection(all)
+    }
 }

@@ -39,9 +39,26 @@ public final class MicSource: @unchecked Sendable {
     private var _converted = 0       // of those, ones that produced samples
     private var _lastLevel = 0.0
     private var _lastError: String?
+    /// Total audio duration handed to the analyzer, and the wall clock at which
+    /// the most recent buffer was handed over. Together these convert the
+    /// analyzer's audio clock into real time: audio only advances while we feed
+    /// it, wall clock advances always, so a fixed start time drifts by exactly
+    /// the amount of audio the speech gate dropped.
+    private var _fedSeconds = 0.0
+    private var _lastFedWall = Date()
     public var stats: (taps: Int, converted: Int, level: Double, error: String?) {
         statsLock.lock(); defer { statsLock.unlock() }
         return (_tapCalls, _converted, _lastLevel, _lastError)
+    }
+
+    /// Wall-clock instant at which the audio now at `audioTime` on the analyzer's
+    /// clock was captured. Feeding is real time, so a sample at audio time T was
+    /// handed over (fed − T) seconds before the most recent buffer.
+    public func wallClock(forAudioTime t: Double) -> Date? {
+        guard t.isFinite else { return nil }
+        statsLock.lock(); defer { statsLock.unlock() }
+        guard _fedSeconds > 0 else { return nil }
+        return _lastFedWall.addingTimeInterval(-(_fedSeconds - t))
     }
 
     private let voiceProcessing: Bool
@@ -192,6 +209,8 @@ public final class MicSource: @unchecked Sendable {
             self.statsLock.lock()
             self._converted += 1
             self._lastLevel = max(self._lastLevel * 0.9, rms)
+            self._fedSeconds += Double(out.frameLength) / self.format.sampleRate
+            self._lastFedWall = Date()
             self.statsLock.unlock()
             self.continuation?.yield(AnalyzerInput(buffer: out))
         }
@@ -204,6 +223,7 @@ public final class MicSource: @unchecked Sendable {
         if !engine.isRunning { try engine.start() }
         capturing = true
         startDate = nil
+        statsLock.lock(); _fedSeconds = 0; _lastFedWall = Date(); statsLock.unlock()
         onRebaseline?()
         onLog?("capturing")
     }
