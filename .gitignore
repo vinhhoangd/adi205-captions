@@ -12,3 +12,6 @@ corpus/*.csv
 # Local run artifacts
 *.log
 .DS_Store
+
+# Stray clones of this repo (test artefacts)
+/adi205-captions/
