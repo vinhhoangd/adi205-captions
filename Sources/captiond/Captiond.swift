@@ -156,7 +156,17 @@ func run(sessions: [String: TranslationSession],
 
     let pipeline = CaptionPipeline(config: cfg, translators: sessions, glossary: glossary)
     var finals = 0
+    var enLat: [Double] = []
     pipeline.onEvent { ev in
+        if ev.kind == .english, ev.latency.isFinite, ev.latency > 0 {
+            enLat.append(ev.latency * 1000)
+            if enLat.count > 5000 { enLat.removeFirst(enLat.count - 5000) }
+            if enLat.count % 25 == 0 {
+                let s = enLat.sorted()
+                note(String(format: "english line: n=%d median %.0f ms p90 %.0f ms",
+                            s.count, s[s.count/2], s[Int(Double(s.count) * 0.9)]))
+            }
+        }
         server.broadcast(ev)
         viewers(server.viewerCount)
         if ev.kind == .finalized {
@@ -274,6 +284,12 @@ func run(sessions: [String: TranslationSession],
             try? await Task.sleep(for: .milliseconds(1000))
             let st = mic.stats
             let dev = AudioDevices.inputs().first { $0.isDefault }?.name ?? "unknown"
+            let skew = mic.clockSkew
+            if skew != 0, Int(Date().timeIntervalSince1970) % 10 == 0 {
+                note(String(format: "clock skew %.1f s — analyzer audio time runs ahead of fed audio "
+                          + "(fed %.1f s); latency figures suppressed while this holds",
+                            -skew, mic.fedSeconds))
+            }
             var warn: String? = nil
             if mic.capturing {
                 if st.taps == 0 { warn = "No audio reaching the app" }

@@ -196,6 +196,19 @@ func runBench(sessions: [String: TranslationSession]) async -> Int32 {
     }
     row("English line", enL)
     row("Translated line", viL)
+    // Every configured language should end up populated: the watched one during
+    // the line, the rest backfilled afterwards.
+    var seen: [Int: Set<String>] = [:]
+    for e in events where e.kind == .finalized || e.kind == .update {
+        seen[e.id, default: []].formUnion(e.translations.keys)
+    }
+    let want = Set(cfg.targetLanguages)
+    let complete = seen.values.filter { $0 == want }.count
+    print("")
+    print("  language coverage  \(complete)/\(seen.count) lines have all \(want.count) languages")
+    for (id, langs) in seen.sorted(by: { $0.key < $1.key }) {
+        print("    line \(id): \(langs.sorted().joined(separator: ", "))")
+    }
     print("")
     let tc = pipeline.translateCalls, cc = pipeline.correctCalls
     print(String(format: "  translate calls   %4d  %7.0f ms avg", tc, tc > 0 ? pipeline.translateTotalMS / Double(tc) : 0))

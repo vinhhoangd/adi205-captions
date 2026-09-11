@@ -146,6 +146,7 @@ public final class CaptionServer: @unchecked Sendable {
     public func broadcast(_ event: CaptionEvent) {
         let obj: [String: Any] = [
             "kind": event.kind.rawValue,
+            "id": event.id,
             "en": event.english,
             "tr": event.translations,   // keyed by language code
             "latencyMS": Int(event.latency.isFinite ? event.latency * 1000 : 0),

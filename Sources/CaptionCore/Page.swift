@@ -126,6 +126,7 @@ public enum CaptionPage {
             font-size:calc(var(--size,34px)*.82); line-height:1.34;
             color:var(--accent); overflow-wrap:break-word; font-weight:500;
           }
+          .tr.pending{opacity:.45;font-style:italic}
           .badge{
             display:inline-block;vertical-align:middle;margin-left:10px;
             font-size:11px;letter-spacing:.07em;text-transform:uppercase;
@@ -243,9 +244,7 @@ public enum CaptionPage {
           }
           function select(code){
             view=code;
-            // Translation calls are serial, so the server only translates what
-            // someone actually has open.
-            fetch(url('/viewing/'+code)).catch(function(){});
+            reportViewing();
             try{ localStorage.setItem('capView',code); }catch(e){}
             Array.prototype.forEach.call(tabBar.children,function(b){
               b.setAttribute('aria-selected', String(b.dataset.code===code));
@@ -264,7 +263,13 @@ public enum CaptionPage {
             var codes = (view==='all') ? LANGS.map(function(l){return l.code}) : [view];
             codes.forEach(function(code){
               var text=trMap[code];
-              if(!text) return;
+              if(!text){
+                if(view!=='all'){
+                  var w=document.createElement('p'); w.className='tr pending';
+                  w.textContent='translating…'; box.appendChild(w);
+                }
+                return;
+              }
               if(view==='all'){
                 var row=document.createElement('div'); row.className='trrow';
                 var lab=document.createElement('span'); lab.className='trlang';
@@ -303,7 +308,17 @@ public enum CaptionPage {
 
           function scroll(){ if(follow) feed.scrollTop=feed.scrollHeight; }
 
-          function liveLine(){
+          // Translation calls are serial, so the server only translates what
+          // someone has open — and it expires that after 90 s. Re-announce on a
+          // timer, or a reader who does not touch the tabs silently drops back to
+          // the first configured language mid-lecture.
+          function reportViewing(){
+            fetch(url('/viewing/'+view)).catch(function(){});
+          }
+          setInterval(reportViewing, 30000);
+
+          var byId={};
+          function liveLine(id){
             if(!started){ started=true; empty.classList.add('hide'); feed.hidden=false; }
             if(!live){
               live=document.createElement('div'); live.className='line';
@@ -311,7 +326,20 @@ public enum CaptionPage {
               live.dataset.tr='{}';
               feed.appendChild(live);
             }
+            if(id!==undefined) byId[id]=live;
+            prune();
             return live;
+          }
+
+          // A 90-minute lecture would otherwise accumulate thousands of nodes and
+          // an id map that never shrinks.
+          var MAX_LINES=250;
+          function prune(){
+            while(feed.children.length>MAX_LINES){
+              var gone=feed.firstChild;
+              feed.removeChild(gone);
+              for(var key in byId){ if(byId[key]===gone){ delete byId[key]; break; } }
+            }
           }
 
           // Input level drives both the header meter and the idle waveform, so a
@@ -401,7 +429,19 @@ public enum CaptionPage {
               return;
             }
 
-            var el=liveLine();
+            // A late update carries translations for languages that were not
+            // being watched when the line settled.
+            if(d.kind==='update'){
+              var target=byId[d.id];
+              if(target){
+                var merged=Object.assign(JSON.parse(target.dataset.tr||'{}'), d.tr||{});
+                target.dataset.tr=JSON.stringify(merged);
+                renderTranslations(target, merged);
+              }
+              return;
+            }
+
+            var el=liveLine(d.id);
             if(d.en) el.querySelector('.en').textContent=d.en;
             if(d.tr){ el.dataset.tr=JSON.stringify(d.tr); renderTranslations(el, d.tr); }
 

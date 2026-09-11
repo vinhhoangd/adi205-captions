@@ -58,8 +58,23 @@ public final class MicSource: @unchecked Sendable {
         guard t.isFinite else { return nil }
         statsLock.lock(); defer { statsLock.unlock() }
         guard _fedSeconds > 0 else { return nil }
-        return _lastFedWall.addingTimeInterval(-(_fedSeconds - t))
+        let behind = _fedSeconds - t
+        // A negative "behind" means the analyzer's clock is ahead of the audio we
+        // believe we fed, which cannot happen physically — it means the two
+        // clocks have different origins. Refuse rather than report a time in the
+        // future, which surfaced as impossible negative latency.
+        guard behind >= 0 else {
+            _clockSkew = behind
+            return nil
+        }
+        _clockSkew = 0
+        return _lastFedWall.addingTimeInterval(-behind)
     }
+
+    private var _clockSkew = 0.0
+    /// Non-zero when the analyzer's audio clock disagrees with the fed audio.
+    public var clockSkew: Double { statsLock.lock(); defer { statsLock.unlock() }; return _clockSkew }
+    public var fedSeconds: Double { statsLock.lock(); defer { statsLock.unlock() }; return _fedSeconds }
 
     private let voiceProcessing: Bool
 
@@ -223,7 +238,10 @@ public final class MicSource: @unchecked Sendable {
         if !engine.isRunning { try engine.start() }
         capturing = true
         startDate = nil
-        statsLock.lock(); _fedSeconds = 0; _lastFedWall = Date(); statsLock.unlock()
+        // Do NOT reset _fedSeconds. The analyzer's audio clock also only advances
+        // while we feed it, so the two stay aligned across a pause. Zeroing this
+        // put them a whole pause apart and produced latencies like -169 s.
+        statsLock.lock(); _lastFedWall = Date(); statsLock.unlock()
         onRebaseline?()
         onLog?("capturing")
     }

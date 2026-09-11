@@ -37,8 +37,11 @@ public struct PipelineConfig: Sendable {
 // MARK: - Events
 
 public struct CaptionEvent: Sendable {
-    public enum Kind: String, Sendable { case english, translation, finalized }
+    public enum Kind: String, Sendable { case english, translation, finalized, update }
     public var kind: Kind
+    /// Identifies the caption line, so a later event can fill in translations
+    /// for languages that were not being watched when the line settled.
+    public var id: Int = 0
     public var english: String
     /// One entry per target language, keyed by language code.
     public var translations: [String: String]
@@ -95,6 +98,7 @@ public final class CaptionPipeline {
     public private(set) var correctTotalMS = 0.0
     public private(set) var confidences: [Double] = []
     private var lastTranslations: [String: String] = [:]
+    private var lineCounter = 0
 
     /// Languages a viewer is actually looking at. Translation calls do not
     /// overlap — measured at 680 ms for one language and 1976 ms for three, a
@@ -166,6 +170,7 @@ public final class CaptionPipeline {
             needsRebaseline = false
         }
         confidences.append(contentsOf: words.map(\.confidence))
+        if confidences.count > 20_000 { confidences.removeFirst(confidences.count - 20_000) }
         if result.isFinal {
             committed.append(contentsOf: words)
             volatileWords = []
@@ -188,15 +193,29 @@ public final class CaptionPipeline {
 
     private var work: Task<Void, Never>?
     private var queued: [() async -> Void] = []
+    /// Backfill jobs live in their own queue. Superseded prefix translations are
+    /// dropped when a line settles; completed-line backfills must not be, or the
+    /// unwatched languages never arrive and switching tabs shows a blank history.
+    private var backfill: [() async -> Void] = []
 
     /// Serialises translation/correction work off the result path, so a slow
     /// call delays only the translated line and never the English one.
     private func schedule(_ job: @escaping () async -> Void) {
         queued.append(job)
+        pump()
+    }
+
+    private func scheduleBackfill(_ job: @escaping () async -> Void) {
+        backfill.append(job)
+        pump()
+    }
+
+    private func pump() {
         guard work == nil else { return }
         work = Task { @MainActor in
-            while !queued.isEmpty {
-                let next = queued.removeFirst()
+            while !queued.isEmpty || !backfill.isEmpty {
+                // Live work first; backfills fill the gaps between utterances.
+                let next = queued.isEmpty ? backfill.removeFirst() : queued.removeFirst()
                 await next()
             }
             work = nil
@@ -223,7 +242,7 @@ public final class CaptionPipeline {
     private func emitEnglish(_ words: [TimedWord]) {
         let all = committed + words
         guard let last = all.last else { return }
-        emit(CaptionEvent(kind: .english,
+        emit(CaptionEvent(kind: .english, id: lineCounter,
                           english: all.map(\.text).joined(separator: " "),
                           translations: lastTranslations,
                           audioTime: last.end,
@@ -237,10 +256,15 @@ public final class CaptionPipeline {
     private func maybeTranslatePrefix() async {
         let all = committed + volatileWords
         guard all.count - lastTranslatedCount >= config.retranslateEveryWords,
-              all.count > config.maskK else { return }
+              !all.isEmpty else { return }
 
-        // Hold back the newest k words: they are the least stable.
-        let shown = Array(all.dropLast(config.maskK))
+        // Hold back the newest k words: they are the least stable. But never
+        // hold back everything — a fixed k of 3 meant a one- to three-word
+        // utterance got no live translation at all and had to wait for the
+        // recogniser to confirm the speaker had stopped, which is why "Hello?"
+        // took seconds to appear. Always show at least one word.
+        let k = min(config.maskK, max(0, all.count - 1))
+        let shown = Array(all.dropLast(k))
         guard let anchor = shown.last else { return }
         let source = shown.map(\.text).joined(separator: " ")
 
@@ -252,7 +276,7 @@ public final class CaptionPipeline {
         translateCalls += 1
         translateTotalMS += lastTranslateMS
         lastTranslations = lastTranslations.merging(got) { _, new in new }
-        emit(CaptionEvent(kind: .translation,
+        emit(CaptionEvent(kind: .translation, id: lineCounter,
                           english: all.map(\.text).joined(separator: " "),
                           translations: got,
                           audioTime: anchor.end,
@@ -295,12 +319,37 @@ public final class CaptionPipeline {
         }
 
         let tf = Date()
-        var finalTr = lastTranslations.merging(await translateAll(english)) { _, new in new }
+        // Only what was translated for THIS line. Merging in lastTranslations
+        // attached the previous sentence's text to this one for any language not
+        // retranslated here.
+        var finalTr = await translateAll(english)
         if finalTr.isEmpty { finalTr = lastTranslations }
+        lastTranslateMS = Date().timeIntervalSince(tf) * 1000
         translateCalls += 1
-        translateTotalMS += Date().timeIntervalSince(tf) * 1000
+        translateTotalMS += lastTranslateMS
         lastTranslations = finalTr
-        emit(CaptionEvent(kind: .finalized,
+
+        // Languages nobody was watching when this line settled would otherwise
+        // stay blank forever, so switching tabs showed an empty history. Fill
+        // them in afterwards: the watched language is already on screen, so this
+        // costs the reader nothing.
+        let lineID = lineCounter
+        let missing = Set(config.targetLanguages).subtracting(finalTr.keys)
+        if !missing.isEmpty {
+            let sentence = english
+            scheduleBackfill { [weak self] in
+                guard let self else { return }
+                let extra = await self.translate(sentence, into: missing)
+                guard !extra.isEmpty else { return }
+                self.emit(CaptionEvent(kind: .update, id: lineID,
+                                       english: sentence,
+                                       translations: extra,
+                                       audioTime: .nan, latency: .nan,
+                                       corrected: false, confidence: 1))
+            }
+        }
+
+        emit(CaptionEvent(kind: .finalized, id: lineID,
                           english: english,
                           translations: finalTr,
                           audioTime: last.end,
@@ -308,6 +357,12 @@ public final class CaptionPipeline {
                           corrected: corrected,
                           confidence: minConf))
 
+        // Open the next line. Without this every caption shared id 0, so the page
+        // merged them into one and a backfill for one sentence landed under
+        // another. And the next line's first English frames would otherwise carry
+        // the previous sentence's translation underneath them.
+        lineCounter += 1
+        lastTranslations = [:]
     }
 
     /// Translates one source string into the languages currently being watched.
@@ -317,6 +372,18 @@ public final class CaptionPipeline {
     /// for one language against 1976 ms for three. Since the cost is linear in
     /// the number of languages, the fix is to ask for fewer — only the ones a
     /// viewer has open.
+    private func translate(_ source: String, into langs: Set<String>) async -> [String: String] {
+        var started: [(String, Task<String?, Never>)] = []
+        for (lang, session) in translators where langs.contains(lang) {
+            started.append((lang, Task { @MainActor in
+                try? await session.translate(source).targetText
+            }))
+        }
+        var out: [String: String] = [:]
+        for (lang, task) in started { if let t = await task.value { out[lang] = t } }
+        return out
+    }
+
     private func translateAll(_ source: String) async -> [String: String] {
         // Start every translation before awaiting any of them. A task group trips
         // the region-isolation checker here because TranslationSession is not
