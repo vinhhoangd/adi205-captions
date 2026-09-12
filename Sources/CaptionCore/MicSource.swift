@@ -46,9 +46,22 @@ public final class MicSource: @unchecked Sendable {
     /// the amount of audio the speech gate dropped.
     private var _fedSeconds = 0.0
     private var _lastFedWall = Date()
+    /// When the audio thread last delivered a buffer. A tap that stops firing is
+    /// silent in every other way — no error, no callback — so the only way to
+    /// notice is to watch the clock.
+    private var _lastTapAt = Date()
     public var stats: (taps: Int, converted: Int, level: Double, error: String?) {
         statsLock.lock(); defer { statsLock.unlock() }
         return (_tapCalls, _converted, _lastLevel, _lastError)
+    }
+
+    /// Seconds since the audio thread last delivered a buffer, or nil when
+    /// paused. Core Audio's own granularity here is ~96 ms, so anything beyond a
+    /// second or two means the tap is dead rather than merely slow.
+    public var secondsSinceTap: Double? {
+        guard capturing else { return nil }
+        statsLock.lock(); defer { statsLock.unlock() }
+        return Date().timeIntervalSince(_lastTapAt)
     }
 
     /// Wall-clock instant at which the audio now at `audioTime` on the analyzer's
@@ -158,12 +171,17 @@ public final class MicSource: @unchecked Sendable {
         // The old tap and converter are then built for a format the hardware no
         // longer produces, and capture dies silently — which is exactly what a
         // Bluetooth headset waking up mid-lecture would do to a demo.
+        // Switching the system default input makes CoreAudio build a *new*
+        // aggregate device, which posts another configuration change, which would
+        // rebuild again. Each rebuild in that storm tears down a tap the next one
+        // replaces, and the engine ends up stopped with a live-looking tap
+        // attached. Coalesce the storm into one rebuild once the hardware settles.
         NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            self.onLog?("audio configuration changed — rebuilding capture")
-            self.rebuild()
+            self.onLog?("audio configuration changed")
+            self.scheduleRebuild()
         }
 
         engine.prepare()
@@ -207,7 +225,10 @@ public final class MicSource: @unchecked Sendable {
                 served = true; status.pointee = .haveData; return buf
             }
 
-            self.statsLock.lock(); self._tapCalls += 1; self.statsLock.unlock()
+            self.statsLock.lock()
+            self._tapCalls += 1
+            self._lastTapAt = Date()
+            self.statsLock.unlock()
             if let err {
                 self.statsLock.lock(); self._lastError = err.localizedDescription; self.statsLock.unlock()
                 return
@@ -235,9 +256,14 @@ public final class MicSource: @unchecked Sendable {
     /// audio clock does not advance while paused but wall clock does.
     public func resume() throws {
         guard !capturing else { return }
-        if !engine.isRunning { try engine.start() }
+        // Same reasoning as rebuild(): isRunning lies after a configuration
+        // change, so start from a known-stopped engine rather than trusting it.
+        engine.stop()
+        engine.prepare()
+        try engine.start()
         capturing = true
         startDate = nil
+        statsLock.lock(); _lastTapAt = Date(); statsLock.unlock()
         // Do NOT reset _fedSeconds. The analyzer's audio clock also only advances
         // while we feed it, so the two stay aligned across a pause. Zeroing this
         // put them a whole pause apart and produced latencies like -169 s.
@@ -253,8 +279,30 @@ public final class MicSource: @unchecked Sendable {
         onLog?("paused")
     }
 
+    private var rebuildGeneration = 0
+
+    /// Coalesces a burst of configuration changes into a single rebuild, run
+    /// after the hardware has had a moment to settle.
+    public func scheduleRebuild(after delay: TimeInterval = 0.35) {
+        rebuildGeneration += 1
+        let generation = rebuildGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, generation == self.rebuildGeneration else { return }
+            self.rebuild()
+        }
+    }
+
     /// Re-attaches the tap after the hardware changed. Keeps the same output
     /// stream, so the analyzer never sees an interruption.
+    ///
+    /// The engine is stopped and started unconditionally rather than on
+    /// `isRunning`. After a configuration change `isRunning` can still report
+    /// true for an engine CoreAudio has already torn down, and the old
+    /// `if !engine.isRunning { start() }` then skipped the restart — leaving a
+    /// freshly installed tap attached to a dead engine, which fires zero times
+    /// and reports no error. That is the "I speak and nothing happens" failure:
+    /// pausing and resuming could not clear it either, because resume consulted
+    /// the same lying flag.
     private func rebuild() {
         let input = engine.inputNode
         input.removeTap(onBus: 0)
@@ -265,7 +313,16 @@ public final class MicSource: @unchecked Sendable {
         }
         converter = conv
         installTap(hwFormat: hw)
-        if capturing, !engine.isRunning { try? engine.start() }
+        if capturing {
+            engine.stop()
+            engine.prepare()
+            do { try engine.start() }
+            catch {
+                onLog?("rebuild could not restart the engine: \(error.localizedDescription)")
+                return
+            }
+            statsLock.lock(); _lastTapAt = Date(); statsLock.unlock()
+        }
         // The analyzer's audio clock keeps counting across a rebuild while wall
         // clock does not, so the latency baseline has to be re-anchored.
         onRebaseline?()

@@ -83,6 +83,15 @@ public enum AudioDevices {
         }
     }
 
+    /// What to offer a user in a menu. CADefaultDeviceAggregate is the wrapper
+    /// CoreAudio builds around whatever the default input already is, so listing
+    /// it offers "the one you picked" under a name nobody recognises — and
+    /// selecting it churns the device for nothing. `inputs()` keeps it, because
+    /// the engine really does sit on it and the logs must be able to say so.
+    public static func selectableInputs() -> [Device] {
+        inputs().filter { !$0.name.hasPrefix("CADefaultDeviceAggregate") }
+    }
+
     /// Case-insensitive substring match, so `CAPTION_DEVICE=macbook` is enough.
     public static func find(matching needle: String) -> Device? {
         let n = needle.lowercased()

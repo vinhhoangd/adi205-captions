@@ -280,7 +280,7 @@ func run(sessions: [String: TranslationSession],
         note("ready — paused until a viewer presses Start")
     }
     // Report the available inputs so the page can offer a picker.
-    let deviceList = { AudioDevices.inputs().map { ["name": $0.name, "current": $0.isDefault] } }
+    let deviceList = { AudioDevices.selectableInputs().map { ["name": $0.name, "current": $0.isDefault] } }
 
     // Push a health snapshot to every viewer once a second, so silence is
     // visibly different from a dead microphone.
@@ -317,6 +317,15 @@ func run(sessions: [String: TranslationSession],
             else if st.taps == last { flag = "  <- TAP NOT FIRING" }
             else if st.converted == 0 { flag = "  <- CONVERSION FAILING" }
             else if st.level < 0.001 { flag = "  <- silent" }
+
+            // Detecting a dead tap and only logging it is not a diagnosis, it is
+            // a spectator sport. Rebuild it. The cost of an unnecessary rebuild
+            // is one re-anchored latency baseline; the cost of not rebuilding is
+            // a lecture captioned as silence.
+            if let idle = mic.secondsSinceTap, idle > 2.5 {
+                note(String(format: "capture stalled %.1f s — rebuilding", idle))
+                mic.scheduleRebuild(after: 0)
+            }
             note(String(format: "capture: %d taps (+%d), %d converted, peak %.4f%@%@",
                         st.taps, st.taps - last, st.converted, st.level, flag,
                         st.error.map { " err: \($0)" } ?? ""))
