@@ -106,6 +106,9 @@ func run(sessions: [String: TranslationSession],
     cfg.maskK = Int(env["CAPTION_MASK_K"] ?? "") ?? 3
     cfg.targetLanguages = langs
     cfg.enableCorrection = (env["CAPTION_CORRECTION"] ?? "0") == "1"
+    // Which model does layer-2 repair. Default is Apple's on-device model, so a
+    // setup with no key and no network behaves exactly as before.
+    let corrector = cfg.enableCorrection ? CorrectorFactory.make(env, prefix: "CAPTION") : nil
     let glossary = (env["CAPTION_GLOSSARY"] ?? "")
         .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
 
@@ -155,6 +158,8 @@ func run(sessions: [String: TranslationSession],
     note("biasing terms: \(glossary.count) · speech detector: \(setup.detector != nil)")
 
     let pipeline = CaptionPipeline(config: cfg, translators: sessions, glossary: glossary)
+    pipeline.setCorrector(corrector)
+    if cfg.enableCorrection { note("correction: \(pipeline.correctorName)") }
     var finals = 0
     var enLat: [Double] = []
     pipeline.onEvent { ev in

@@ -88,7 +88,7 @@ public final class CaptionPipeline {
 
     public private(set) var config: PipelineConfig
     private let translators: [String: TranslationSession]
-    private var corrector: LanguageModelSession?
+    private var corrector: (any TextCorrector)?
     private let glossary: [String]
 
     private var streamStart: Date = .now
@@ -128,6 +128,14 @@ public final class CaptionPipeline {
 
     public func onEvent(_ cb: @escaping (CaptionEvent) -> Void) { self.emit = cb }
 
+    /// Chooses which model performs layer-2 repair. Must be set before `warmUp`,
+    /// which is where the first-inference cost is paid. Nil leaves layer 1
+    /// (glossary repair) as the only correction, which is the shipped default.
+    public func setCorrector(_ c: (any TextCorrector)?) { corrector = c }
+
+    /// Names the active corrector for logs and the bench report.
+    public var correctorName: String { corrector?.name ?? "none" }
+
     /// First inference on any of these models costs seconds. Paying that at
     /// launch instead of on the first spoken sentence is the single cheapest
     /// latency win available, and the one most likely to matter on demo day.
@@ -136,12 +144,8 @@ public final class CaptionPipeline {
     @discardableResult
     public func warmUp() async -> (Double, Double) {
         var correctorMS = 0.0, translatorMS = 0.0
-        if config.enableCorrection, case .available = SystemLanguageModel.default.availability {
-            let t = Date()
-            let s = LanguageModelSession(instructions: Self.correctionInstructions)
-            _ = try? await s.respond(to: "warm up", options: .init(maximumResponseTokens: 4))
-            corrector = s
-            correctorMS = Date().timeIntervalSince(t) * 1000
+        if config.enableCorrection, let corrector {
+            correctorMS = await corrector.warmUp()
         }
         let t2 = Date()
         for (_, session) in translators { _ = try? await session.translate("warm up") }
@@ -322,10 +326,7 @@ public final class CaptionPipeline {
         if config.enableCorrection, minConf < config.correctionConfidenceThreshold,
            let corrector {
             let tc = Date()
-            let fixedOpt = try? await corrector.respond(
-                to: "Transcript: \(english)",
-                options: .init(temperature: 0.0, maximumResponseTokens: 120)
-            ).content
+            let fixedOpt = await corrector.correct(english)
             correctCalls += 1
             correctTotalMS += Date().timeIntervalSince(tc) * 1000
             if let fixed = fixedOpt {
@@ -483,12 +484,6 @@ public final class CaptionPipeline {
         return Date().timeIntervalSince(streamStart.addingTimeInterval(audioTime))
     }
 
-    static let correctionInstructions = """
-    You repair speech-recognition output from a university lecture.
-    Fix only words that were clearly misheard. Preserve the original wording, \
-    punctuation and capitalisation everywhere else. If nothing is wrong, return \
-    the input unchanged. Reply with the corrected sentence and nothing else.
-    """
 }
 
 func editDistance(_ a: String, _ b: String) -> Int {

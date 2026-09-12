@@ -172,7 +172,32 @@ selected.**
 | `CAPTION_MASK_K` | `3` | Words held back from the translated line |
 | `CAPTION_CHUNK_MS` | `50` | Capture granularity |
 | `CAPTION_GLOSSARY` | — | Comma-separated course terms |
-| `CAPTION_CORRECTION` | `0` | `1` enables the on-device LLM pass — see the finding below |
+| `CAPTION_CORRECTION` | `0` | `1` enables the layer-2 LLM pass — see the finding below |
+| `CAPTION_CORRECTOR` | `apple` | Which model corrects: `apple` (on-device), `gemini` (cloud), `off` |
+| `GEMINI_API_KEY` | — | Required for `CAPTION_CORRECTOR=gemini`; without it correction stays off |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any Gemini model id |
+| `GEMINI_TIMEOUT_MS` | `900` | Hard deadline. A slower reply is dropped and the line ships uncorrected |
+| `GEMINI_THINKING` | `0` | `1` re-enables the model's reasoning pass. Costs latency, buys nothing here |
+
+The bench takes the same settings under a `BENCH_` prefix.
+
+### Choosing a corrector
+
+Both backends fail open: a correction that errors or overruns its deadline is
+discarded and the uncorrected line ships, because a late caption is worse than
+an imperfect one. What differs is the failure mode and what leaves the room.
+
+| | Apple on-device | Gemini |
+|---|---|---|
+| Per call | ~2.2 s measured, 6.5 s on a cold model | bounded by `GEMINI_TIMEOUT_MS` |
+| Needs network | no | yes — including during the demo |
+| Transcript leaves the room | no | yes, to Google |
+| Needs an API key | no | yes |
+
+The on-device model is the default because it keeps the project offline and
+private, which is the property the pipeline was designed around. Gemini is the
+right choice only if the correction quality is worth giving that up, and only
+on a network you trust to be up during the lecture.
 | `CAPTION_VAD` | `1` | Apple `SpeechDetector` ahead of transcription |
 | `CAPTION_VOICEPROC` | `0` | `1` enables AEC + noise suppression |
 | `CAPTION_DEVICE` | — | Requested input device. **Does not work — see below.** |

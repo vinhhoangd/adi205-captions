@@ -76,6 +76,7 @@ func runBench(sessions: [String: TranslationSession]) async -> Int32 {
     var cfg = PipelineConfig()
     cfg.maskK = Int(env["BENCH_MASK_K"] ?? "") ?? 3
     cfg.enableCorrection = (env["BENCH_CORRECTION"] ?? "0") == "1"
+    let corrector = cfg.enableCorrection ? CorrectorFactory.make(env, prefix: "BENCH") : nil
     cfg.correctionConfidenceThreshold = Double(env["BENCH_CONF"] ?? "") ?? 0.75
     cfg.targetLanguages = Array(sessions.keys).sorted()
     let chunkMS = Double(env["BENCH_CHUNK_MS"] ?? "") ?? 50
@@ -102,6 +103,7 @@ func runBench(sessions: [String: TranslationSession]) async -> Int32 {
     let format = setup.format
 
     let pipeline = CaptionPipeline(config: cfg, translators: sessions, glossary: glossary)
+    pipeline.setCorrector(corrector)
 
     let collector = EventCollector()
     pipeline.onEvent { ev in collector.add(ev) }
@@ -181,7 +183,7 @@ func runBench(sessions: [String: TranslationSession]) async -> Int32 {
     print("")
     print("file            \((path as NSString).lastPathComponent)")
     print(String(format: "audio           %.2f s", source.totalDuration))
-    print("chunk           \(Int(chunkMS)) ms     mask-k \(cfg.maskK)     correction \(cfg.enableCorrection ? "on" : "off")")
+    print("chunk           \(Int(chunkMS)) ms     mask-k \(cfg.maskK)     correction \(cfg.enableCorrection ? pipeline.correctorName : "off")")
     print("languages       \(cfg.targetLanguages.joined(separator: ", "))")
     print("biasing         \(setup.context.contextualStrings[.general]?.count ?? 0) terms      speech detector \(setup.detector != nil ? "on" : "off")")
     print(String(format: "warm-up         corrector %.0f ms · translator %.0f ms", warmCorrMS, warmTransMS))
