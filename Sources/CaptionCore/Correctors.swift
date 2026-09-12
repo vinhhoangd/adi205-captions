@@ -153,6 +153,99 @@ public struct GeminiCorrector: TextCorrector {
     }
 }
 
+// MARK: - OpenAI-compatible (Qwen, and anything else speaking that API)
+
+/// Any endpoint speaking the OpenAI chat-completions API.
+///
+/// One implementation covers three cases that matter here: Qwen 2.5 running
+/// locally under Ollama or llama.cpp, Qwen hosted by a provider, and any other
+/// model behind the same shape. Only the base URL and model name change.
+///
+/// Run locally this is the interesting option for this project. It is a real
+/// third-party model, so the comparison against Apple's is meaningful — but the
+/// audio and transcript never leave the machine, so it keeps the offline and
+/// private property the pipeline was designed around. A hosted endpoint gives
+/// that up, exactly as the Gemini backend does.
+public struct OpenAICompatibleCorrector: TextCorrector {
+    public let name: String
+    private let baseURL: String
+    private let model: String
+    private let apiKey: String?
+    private let timeout: TimeInterval
+    private let session: URLSession
+
+    /// - Parameters:
+    ///   - baseURL: root of the API, e.g. `http://localhost:11434/v1` for Ollama.
+    ///   - apiKey: omitted for a local runtime, which authenticates nothing.
+    public init(baseURL: String = "http://localhost:11434/v1",
+                model: String = "qwen2.5:1.5b",
+                apiKey: String? = nil,
+                timeoutMS: Double = 1500,
+                label: String? = nil) {
+        self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        self.model = model
+        self.apiKey = apiKey
+        self.timeout = timeoutMS / 1000
+        self.name = label ?? "openai-compatible:\(model)"
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = timeoutMS / 1000
+        c.waitsForConnectivity = false
+        self.session = URLSession(configuration: c)
+    }
+
+    public static func qwen(_ env: [String: String] = ProcessInfo.processInfo.environment)
+        -> OpenAICompatibleCorrector {
+        OpenAICompatibleCorrector(
+            baseURL: env["QWEN_BASE_URL"] ?? "http://localhost:11434/v1",
+            model: env["QWEN_MODEL"] ?? "qwen2.5:1.5b",
+            apiKey: env["QWEN_API_KEY"].flatMap { $0.isEmpty ? nil : $0 },
+            timeoutMS: Double(env["QWEN_TIMEOUT_MS"] ?? "") ?? 1500,
+            label: "qwen:\(env["QWEN_MODEL"] ?? "qwen2.5:1.5b")")
+    }
+
+    /// A local runtime loads the weights on first use, which costs seconds.
+    /// Ollama then holds the model in memory for five minutes by default, so a
+    /// lecture with pauses in it stays warm.
+    public func warmUp() async -> Double {
+        let t = Date()
+        _ = await correct("warm up")
+        return Date().timeIntervalSince(t) * 1000
+    }
+
+    public func correct(_ text: String) async -> String? {
+        guard let url = URL(string: "\(baseURL)/chat/completions") else { return nil }
+        let body: [String: Any] = [
+            "model": model,
+            "temperature": 0,
+            "max_tokens": 120,
+            "stream": false,
+            "messages": [
+                ["role": "system", "content": correctionInstructions],
+                ["role": "user", "content": "Transcript: \(text)"],
+            ],
+        ]
+        guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = timeout
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey { req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
+        req.httpBody = payload
+
+        guard let (data, resp) = try? await session.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = obj["choices"] as? [[String: Any]],
+              let msg = choices.first?["message"] as? [String: Any],
+              let out = msg["content"] as? String
+        else { return nil }
+
+        let clean = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return clean.isEmpty ? nil : clean
+    }
+}
+
 // MARK: - Selection
 
 public enum CorrectorFactory {
@@ -164,6 +257,7 @@ public enum CorrectorFactory {
         switch (env["\(prefix)_CORRECTOR"] ?? "apple").lowercased() {
         case "off", "none": return nil
         case "gemini": return GeminiCorrector.fromEnvironment(env)
+        case "qwen", "ollama", "local": return OpenAICompatibleCorrector.qwen(env)
         default: return AppleCorrector()
         }
     }

@@ -173,7 +173,10 @@ selected.**
 | `CAPTION_CHUNK_MS` | `50` | Capture granularity |
 | `CAPTION_GLOSSARY` | — | Comma-separated course terms |
 | `CAPTION_CORRECTION` | `0` | `1` enables the layer-2 LLM pass — see the finding below |
-| `CAPTION_CORRECTOR` | `apple` | Which model corrects: `apple` (on-device), `gemini` (cloud), `off` |
+| `CAPTION_CORRECTOR` | `apple` | Which model corrects: `qwen` (local), `apple` (on-device), `gemini` (cloud), `off` |
+| `QWEN_MODEL` | `qwen2.5:1.5b` | Any model the local server has pulled |
+| `QWEN_BASE_URL` | `http://localhost:11434/v1` | Any OpenAI-compatible endpoint |
+| `QWEN_TIMEOUT_MS` | `1500` | Hard deadline, as above |
 | `GEMINI_API_KEY` | — | Required for `CAPTION_CORRECTOR=gemini`; without it correction stays off |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any Gemini model id |
 | `GEMINI_TIMEOUT_MS` | `900` | Hard deadline. A slower reply is dropped and the line ships uncorrected |
@@ -187,17 +190,35 @@ Both backends fail open: a correction that errors or overruns its deadline is
 discarded and the uncorrected line ships, because a late caption is worse than
 an imperfect one. What differs is the failure mode and what leaves the room.
 
-| | Apple on-device | Gemini |
-|---|---|---|
-| Per call | ~2.2 s measured, 6.5 s on a cold model | bounded by `GEMINI_TIMEOUT_MS` |
-| Needs network | no | yes — including during the demo |
-| Transcript leaves the room | no | yes, to Google |
-| Needs an API key | no | yes |
+| | Qwen 2.5 1.5B (local) | Apple on-device | Gemini |
+|---|---|---|---|
+| Per call, measured | **127-485 ms** | ~2.2 s warm, 6.5 s cold | not measured — key refused |
+| Needs network | no | no | yes, during the lecture |
+| Transcript leaves the room | no | no | yes, to Google |
+| Needs an API key | no | no | yes |
+| Extra setup | Ollama + a 1 GB pull | none | a key |
 
-The on-device model is the default because it keeps the project offline and
-private, which is the property the pipeline was designed around. Gemini is the
-right choice only if the correction quality is worth giving that up, and only
-on a network you trust to be up during the lecture.
+**Qwen 2.5 1.5B under Ollama is the one to use.** It is roughly seventeen times
+faster than Apple's on-device model and it fixes the errors that matter: it
+turned "a hidden stake for every token" back into "a hidden state" in the live
+speaker test. Because it runs locally it costs nothing per call and keeps the
+offline, nothing-leaves-the-room property the pipeline was designed around —
+so the third-party comparison the brief asks for does not have to be paid for
+in privacy.
+
+Set it up once:
+
+    brew install ollama
+    ollama serve &
+    ollama pull qwen2.5:1.5b
+
+Measured end to end with correction on and the gate forced open, all three
+languages configured:
+
+| Clip | English median / p90 | Translated median / p90 | Correction avg |
+|---|---|---|---|
+| lecture1 | 34 / 48 ms | 1049 / 1288 ms | 485 ms |
+| lecture2 | 27 / 39 ms | 800 / 1197 ms | 216 ms |
 | `CAPTION_VAD` | `1` | Apple `SpeechDetector` ahead of transcription |
 | `CAPTION_VOICEPROC` | `0` | `1` enables AEC + noise suppression |
 | `CAPTION_DEVICE` | — | Requested input device. **Does not work — see below.** |
