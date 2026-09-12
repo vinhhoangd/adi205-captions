@@ -15,15 +15,18 @@ else
   echo "No .env.local — copy .env.example to .env.local and fill it in." >&2
 fi
 
-if [ "${CAPTION_CORRECTOR:-}" = "qwen" ]; then
-  BASE="${QWEN_BASE_URL:-http://localhost:11434/v1}"
-  if ! curl -sf -m 2 -o /dev/null "${BASE%/v1}/api/tags"; then
-    echo "CAPTION_CORRECTOR=qwen but no local model server is answering at $BASE." >&2
-    echo "Start it with:  ollama serve" >&2
-    echo "Then:           ollama pull ${QWEN_MODEL:-qwen2.5:1.5b}" >&2
-    exit 1
-  fi
-fi
+case "${CAPTION_CORRECTOR:-}" in
+  qwen|llama|ollama|local)
+    BASE="${LOCAL_BASE_URL:-${QWEN_BASE_URL:-http://localhost:11434/v1}}"
+    MODEL="${LOCAL_MODEL:-${QWEN_MODEL:-qwen2.5:1.5b}}"
+    if ! curl -sf -m 2 -o /dev/null "${BASE%/v1}/api/tags"; then
+      echo "CAPTION_CORRECTOR=$CAPTION_CORRECTOR but no local model server is answering at $BASE." >&2
+      echo "Start it with:  ollama serve" >&2
+      echo "Then:           ollama pull $MODEL" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 if [ "${CAPTION_CORRECTOR:-}" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}" ]; then
   echo "CAPTION_CORRECTOR=gemini but GEMINI_API_KEY is empty." >&2

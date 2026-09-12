@@ -193,14 +193,25 @@ public struct OpenAICompatibleCorrector: TextCorrector {
         self.session = URLSession(configuration: c)
     }
 
-    public static func qwen(_ env: [String: String] = ProcessInfo.processInfo.environment)
+    /// Builds from the environment. Reads `LOCAL_*` first and falls back to the
+    /// older `QWEN_*` spelling, which named the backend after the first model
+    /// that happened to run on it — misleading the moment a second one does.
+    public static func local(_ env: [String: String] = ProcessInfo.processInfo.environment)
         -> OpenAICompatibleCorrector {
-        OpenAICompatibleCorrector(
-            baseURL: env["QWEN_BASE_URL"] ?? "http://localhost:11434/v1",
-            model: env["QWEN_MODEL"] ?? "qwen2.5:1.5b",
-            apiKey: env["QWEN_API_KEY"].flatMap { $0.isEmpty ? nil : $0 },
-            timeoutMS: Double(env["QWEN_TIMEOUT_MS"] ?? "") ?? 1500,
-            label: "qwen:\(env["QWEN_MODEL"] ?? "qwen2.5:1.5b")")
+        func v(_ key: String) -> String? {
+            let raw = env["LOCAL_\(key)"] ?? env["QWEN_\(key)"]
+            return raw.flatMap { $0.isEmpty ? nil : $0 }
+        }
+        let model = v("MODEL") ?? "qwen2.5:1.5b"
+        return OpenAICompatibleCorrector(
+            baseURL: v("BASE_URL") ?? "http://localhost:11434/v1",
+            model: model,
+            apiKey: v("API_KEY"),
+            // A bigger model needs a bigger window: 1.5B answers in ~200 ms, an
+            // 8B does not. Too tight a deadline does not make it faster, it just
+            // throws the answer away after paying for it.
+            timeoutMS: Double(v("TIMEOUT_MS") ?? "") ?? 2500,
+            label: "local:\(model)")
     }
 
     /// A local runtime loads the weights on first use, which costs seconds.
@@ -257,7 +268,7 @@ public enum CorrectorFactory {
         switch (env["\(prefix)_CORRECTOR"] ?? "apple").lowercased() {
         case "off", "none": return nil
         case "gemini": return GeminiCorrector.fromEnvironment(env)
-        case "qwen", "ollama", "local": return OpenAICompatibleCorrector.qwen(env)
+        case "qwen", "llama", "ollama", "local": return OpenAICompatibleCorrector.local(env)
         default: return AppleCorrector()
         }
     }

@@ -174,9 +174,9 @@ selected.**
 | `CAPTION_GLOSSARY` | — | Comma-separated course terms |
 | `CAPTION_CORRECTION` | `0` | `1` enables the layer-2 LLM pass — see the finding below |
 | `CAPTION_CORRECTOR` | `apple` | Which model corrects: `qwen` (local), `apple` (on-device), `gemini` (cloud), `off` |
-| `QWEN_MODEL` | `qwen2.5:1.5b` | Any model the local server has pulled |
-| `QWEN_BASE_URL` | `http://localhost:11434/v1` | Any OpenAI-compatible endpoint |
-| `QWEN_TIMEOUT_MS` | `1500` | Hard deadline, as above |
+| `LOCAL_MODEL` | `qwen2.5:1.5b` | Any model the local server has pulled |
+| `LOCAL_BASE_URL` | `http://localhost:11434/v1` | Any OpenAI-compatible endpoint |
+| `LOCAL_TIMEOUT_MS` | `2500` | Hard deadline, as above |
 | `CAPTION_CONF` | `0.75` | Correct below this ASR confidence. `1.1` corrects every line |
 | `GEMINI_API_KEY` | — | Required for `CAPTION_CORRECTOR=gemini`; without it correction stays off |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any Gemini model id |
@@ -199,6 +199,36 @@ an imperfect one. What differs is the failure mode and what leaves the room.
 | Needs an API key | no | no | yes |
 | Extra setup | Ollama + a 1 GB pull | none | a key |
 
+### Local models compared
+
+Three local models, same prompt, same two sentences, warm:
+
+| Model | Size | Per call | "hidden stake" | "eigon vector" |
+|---|---|---|---|---|
+| **qwen2.5:1.5b** | 1.0 GB | **0.23 s** | → hidden state | → **eigenvector** |
+| llama3.1:8b | 4.9 GB | 0.74-1.00 s | → hidden state | → eigen *vector* |
+| gemma2:9b | 5.4 GB | 1.17-1.28 s | → hidden state | → eigen *vector* |
+
+The smallest model is four times faster **and** more accurate on the term that
+matters. Both 8-9B models split "eigenvector" into two words, which is wrong in
+a machine-learning lecture, and in the full-pipeline run llama3.1 also left
+"postrior" unrepaired. One of its correction calls hit the 3 s deadline and was
+discarded outright.
+
+This is the finding worth writing up: for constrained repair against a known
+vocabulary, model size buys nothing and costs latency. The task is not hard
+enough to need the capacity, and the bigger models spend their extra freedom
+making changes nobody asked for.
+
+Full pipeline, correction on every line:
+
+| Model | Clip | English median / p90 | Translated median / p90 | Correction avg |
+|---|---|---|---|---|
+| qwen2.5:1.5b | lecture1 | 34 / 48 ms | 1049 / 1288 ms | 485 ms |
+| qwen2.5:1.5b | lecture2 | 27 / 39 ms | 800 / 1197 ms | 216 ms |
+| llama3.1:8b | lecture1 | 26 / 50 ms | 1231 / 1372 ms | 3004 ms (timed out) |
+| llama3.1:8b | lecture2 | 19 / 40 ms | 726 / 1510 ms | 804 ms |
+
 **Qwen 2.5 1.5B under Ollama is the one to use.** It is roughly seventeen times
 faster than Apple's on-device model and it fixes the errors that matter: it
 turned "a hidden stake for every token" back into "a hidden state" in the live
@@ -213,13 +243,7 @@ Set it up once:
     ollama serve &
     ollama pull qwen2.5:1.5b
 
-Measured end to end with correction on and the gate forced open, all three
-languages configured:
 
-| Clip | English median / p90 | Translated median / p90 | Correction avg |
-|---|---|---|---|
-| lecture1 | 34 / 48 ms | 1049 / 1288 ms | 485 ms |
-| lecture2 | 27 / 39 ms | 800 / 1197 ms | 216 ms |
 | `CAPTION_VAD` | `1` | Apple `SpeechDetector` ahead of transcription |
 | `CAPTION_VOICEPROC` | `0` | `1` enables AEC + noise suppression |
 | `CAPTION_DEVICE` | — | Requested input device. **Does not work — see below.** |
