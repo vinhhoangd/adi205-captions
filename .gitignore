@@ -15,3 +15,6 @@ corpus/*.csv
 
 # Stray clones of this repo (test artefacts)
 /adi205-captions/
+
+# Local secrets — API keys live here, never in the repo
+.env.local
