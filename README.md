@@ -203,22 +203,33 @@ an imperfect one. What differs is the failure mode and what leaves the room.
 
 Three local models, same prompt, same two sentences, warm:
 
-| Model | Size | Per call | "hidden stake" | "eigon vector" |
-|---|---|---|---|---|
-| **qwen2.5:1.5b** | 1.0 GB | **0.23 s** | → hidden state | → **eigenvector** |
-| llama3.1:8b | 4.9 GB | 0.74-1.00 s | → hidden state | → eigen *vector* |
-| gemma2:9b | 5.4 GB | 1.17-1.28 s | → hidden state | → eigen *vector* |
+Fifteen cases: twelve sentences carrying a realistic mishearing, plus three
+already-correct controls a good corrector should leave alone. Scored on whether
+the intended repair appears, warm models, `tools/modeltest.py`.
 
-The smallest model is four times faster **and** more accurate on the term that
-matters. Both 8-9B models split "eigenvector" into two words, which is wrong in
-a machine-learning lecture, and in the full-pipeline run llama3.1 also left
-"postrior" unrepaired. One of its correction calls hit the 3 s deadline and was
-discarded outright.
+| Model | Size | Correct | Broke a control | Median | p90 |
+|---|---|---|---|---|---|
+| **qwen2.5:1.5b** | 1.0 GB | 10/15 | 1 | **166 ms** | **185 ms** |
+| llama3.1:8b | 4.9 GB | 10/15 | 1 | 603 ms | 645 ms |
 
-This is the finding worth writing up: for constrained repair against a known
-vocabulary, model size buys nothing and costs latency. The task is not hard
-enough to need the capacity, and the bigger models spend their extra freedom
-making changes nobody asked for.
+**They are equally accurate. The small one is 3.6x faster.** An earlier revision
+of this file claimed the small model was also *more* accurate. That was drawn
+from two sentences and did not survive a fifteen-case test — the two models miss
+different things, not more things. Llama splits "eigenvector"; Qwen mangles
+"mean mu". Both leave "back propagation" as two words. Both rewrite one control
+sentence they should not have touched.
+
+Two things that test taught us:
+
+1. **Size buys nothing here and costs latency.** Constrained repair against a
+   known vocabulary does not need an 8B model's capacity. Choose on speed.
+2. **Both models will damage a sentence that was already correct** — which is
+   the argument for the confidence gate. Correction runs only below
+   `CAPTION_CONF`, so a line the recognizer was sure about is never put at risk.
+
+One scoring caveat, in both models' favour: both answered "cross-entropy loss"
+with a hyphen, which the test counted as a miss. On a fairer reading both score
+11/15.
 
 Full pipeline, correction on every line:
 
@@ -229,7 +240,8 @@ Full pipeline, correction on every line:
 | llama3.1:8b | lecture1 | 26 / 50 ms | 1231 / 1372 ms | 3004 ms (timed out) |
 | llama3.1:8b | lecture2 | 19 / 40 ms | 726 / 1510 ms | 804 ms |
 
-**Qwen 2.5 1.5B under Ollama is the one to use.** It is roughly seventeen times
+**Qwen 2.5 1.5B under Ollama is the one to use** — on speed, not on accuracy,
+where it ties with a model five times its size. It is roughly seventeen times
 faster than Apple's on-device model and it fixes the errors that matter: it
 turned "a hidden stake for every token" back into "a hidden state" in the live
 speaker test. Because it runs locally it costs nothing per call and keeps the
