@@ -106,6 +106,10 @@ func run(sessions: [String: TranslationSession],
     cfg.maskK = Int(env["CAPTION_MASK_K"] ?? "") ?? 3
     cfg.targetLanguages = langs
     cfg.enableCorrection = (env["CAPTION_CORRECTION"] ?? "0") == "1"
+    // Parity with the bench, which has always had this. Raising the gate to 1.1
+    // corrects every line, which is how you demonstrate the pass rather than
+    // wait for the recognizer to be unsure.
+    cfg.correctionConfidenceThreshold = Double(env["CAPTION_CONF"] ?? "") ?? 0.75
     // Which model does layer-2 repair. Default is Apple's on-device model, so a
     // setup with no key and no network behaves exactly as before.
     let corrector = cfg.enableCorrection ? CorrectorFactory.make(env, prefix: "CAPTION") : nil

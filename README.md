@@ -177,6 +177,7 @@ selected.**
 | `QWEN_MODEL` | `qwen2.5:1.5b` | Any model the local server has pulled |
 | `QWEN_BASE_URL` | `http://localhost:11434/v1` | Any OpenAI-compatible endpoint |
 | `QWEN_TIMEOUT_MS` | `1500` | Hard deadline, as above |
+| `CAPTION_CONF` | `0.75` | Correct below this ASR confidence. `1.1` corrects every line |
 | `GEMINI_API_KEY` | — | Required for `CAPTION_CORRECTOR=gemini`; without it correction stays off |
 | `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Any Gemini model id |
 | `GEMINI_TIMEOUT_MS` | `900` | Hard deadline. A slower reply is dropped and the line ships uncorrected |
