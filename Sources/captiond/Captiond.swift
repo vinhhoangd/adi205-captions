@@ -110,6 +110,9 @@ func run(sessions: [String: TranslationSession],
     // corrects every line, which is how you demonstrate the pass rather than
     // wait for the recognizer to be unsure.
     cfg.correctionConfidenceThreshold = Double(env["CAPTION_CONF"] ?? "") ?? 0.75
+    // Documented in the README but never read until now: setting it did nothing.
+    // It is the main lever on translated-line latency, so it has to work.
+    cfg.minRetranslateGapMS = Double(env["CAPTION_MIN_GAP_MS"] ?? "") ?? 450
     // Which model does layer-2 repair. Default is Apple's on-device model, so a
     // setup with no key and no network behaves exactly as before.
     let corrector = cfg.enableCorrection ? CorrectorFactory.make(env, prefix: "CAPTION") : nil

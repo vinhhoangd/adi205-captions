@@ -166,7 +166,8 @@ selected.**
 |---|---|---|
 | `CAPTION_LANGS` | `vi,zh-Hans,zh-Hant` | Target languages, comma-separated |
 | `CAPTION_AUTOSTART` | `0` | `1` starts recording without pressing Start |
-| `CAPTION_MIN_GAP_MS` | `450` | Floor between prefix translations |
+| `CAPTION_MIN_GAP_MS` | `450` | Floor between prefix translations — the main lever on translated-line latency |
+| `CAPTION_LOG` | — | Write the run log to this path as well as the console |
 | `CAPTION_TOKEN` | — | Require `?k=<token>` on every request. Set this before exposing the server beyond the LAN |
 | `CAPTION_PORT` | `8420` | HTTP port |
 | `CAPTION_MASK_K` | `3` | Words held back from the translated line |
@@ -183,7 +184,10 @@ selected.**
 | `GEMINI_TIMEOUT_MS` | `900` | Hard deadline. A slower reply is dropped and the line ships uncorrected |
 | `GEMINI_THINKING` | `0` | `1` re-enables the model's reasoning pass. Costs latency, buys nothing here |
 
-The bench takes the same settings under a `BENCH_` prefix.
+The bench takes the same settings under a `BENCH_` prefix, plus four of its
+own: `BENCH_WAV` (the clip), `BENCH_BIAS` (terms fed to the *recognizer*, as
+distinct from `BENCH_GLOSSARY` which feeds the *repair* pass), `BENCH_CSV`
+and `BENCH_OUT` (where results are written).
 
 ### Choosing a corrector
 

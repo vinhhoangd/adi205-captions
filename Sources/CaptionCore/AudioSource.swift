@@ -36,11 +36,11 @@ public struct PacedFileSource {
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: outCapacity) else {
             throw CaptionError.audio("cannot allocate output buffer")
         }
-        var fed = false
+        let latch = ConverterLatch()
         var convErr: NSError?
         converter.convert(to: outBuf, error: &convErr) { _, status in
-            if fed { status.pointee = .endOfStream; return nil }
-            fed = true; status.pointee = .haveData; return inBuf
+            guard latch.take() else { status.pointee = .endOfStream; return nil }
+            status.pointee = .haveData; return inBuf
         }
         if let convErr { throw CaptionError.audio("conversion failed: \(convErr.localizedDescription)") }
 
@@ -114,4 +114,19 @@ public enum CaptionError: Error, CustomStringConvertible {
 /// Immutable carrier so decoded audio can cross into the producer task.
 struct BufferBox: @unchecked Sendable {
     let buffers: [AVAudioPCMBuffer]
+}
+
+/// One-shot latch for `AVAudioConverter`'s input block.
+///
+/// The block is invoked synchronously, on this thread, before `convert` returns
+/// — but its type is @Sendable, so a captured `var` trips strict concurrency.
+/// A reference holds the state legally and documents why it is safe.
+final class ConverterLatch: @unchecked Sendable {
+    private var served = false
+    /// True the first time only; false on every later call.
+    func take() -> Bool {
+        if served { return false }
+        served = true
+        return true
+    }
 }

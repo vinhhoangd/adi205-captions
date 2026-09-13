@@ -77,12 +77,20 @@ public final class MicSource: @unchecked Sendable {
         // believe we fed, which cannot happen physically — it means the two
         // clocks have different origins. Refuse rather than report a time in the
         // future, which surfaced as impossible negative latency.
-        guard behind >= 0 else {
+        //
+        // But the tolerance must not be zero. The analyzer reports on its own
+        // frame boundaries, so it routinely sits a fraction of a buffer ahead of
+        // the total we have counted feeding it. With an exact test, that rounding
+        // suppressed more than half of all latency measurements in a live
+        // session — a measurement lost to a discrepancy far smaller than the
+        // thing being measured. Anything inside one buffer is rounding: clamp it.
+        let tolerance = Double(chunkFrames) / format.sampleRate + 0.05
+        guard behind >= -tolerance else {
             _clockSkew = behind
             return nil
         }
         _clockSkew = 0
-        return _lastFedWall.addingTimeInterval(-behind)
+        return _lastFedWall.addingTimeInterval(-max(0, behind))
     }
 
     private var _clockSkew = 0.0
@@ -237,10 +245,10 @@ public final class MicSource: @unchecked Sendable {
             guard let out = AVAudioPCMBuffer(pcmFormat: self.format, frameCapacity: capacity) else { return }
 
             var err: NSError?
-            var served = false
+            let latch = ConverterLatch()
             conv.convert(to: out, error: &err) { _, status in
-                if served { status.pointee = .noDataNow; return nil }
-                served = true; status.pointee = .haveData; return buf
+                guard latch.take() else { status.pointee = .noDataNow; return nil }
+                status.pointee = .haveData; return buf
             }
 
             self.statsLock.lock()
@@ -284,24 +292,42 @@ public final class MicSource: @unchecked Sendable {
     /// audio clock does not advance while paused but wall clock does.
     public func resume() throws {
         guard !capturing else { return }
-        // Same reasoning as rebuild(): isRunning lies after a configuration
-        // change, so start from a known-stopped engine rather than trusting it.
+        // `capturing` gates the tap, so it has to be true before the engine
+        // starts or the first buffers are dropped. That makes every failure path
+        // below responsible for putting it back: a `capturing` that outlives a
+        // failed start is the state that reports "listening" while no audio
+        // moves, which is indistinguishable to the user from the app ignoring
+        // them.
         capturing = true
-        if needsRebuild {
-            needsRebuild = false
-            // The tap and converter belong to a device that is no longer there.
-            rebuild()
-        } else {
-            engine.stop()
-            engine.prepare()
-            try engine.start()
+        do {
+            if needsRebuild {
+                needsRebuild = false
+                // The tap and converter belong to a device that is no longer there.
+                rebuild()
+            } else {
+                // isRunning lies after a configuration change, so start from a
+                // known-stopped engine rather than trusting it.
+                engine.stop()
+                engine.prepare()
+                try engine.start()
+            }
+        } catch {
+            capturing = false
+            throw error
+        }
+        // rebuild() swallows its own start failure, so confirm rather than assume.
+        guard engine.isRunning else {
+            capturing = false
+            throw CaptionError.audio("audio engine would not start — is another app holding the microphone?")
         }
         startDate = nil
-        statsLock.lock(); _lastTapAt = Date(); statsLock.unlock()
         // Do NOT reset _fedSeconds. The analyzer's audio clock also only advances
         // while we feed it, so the two stay aligned across a pause. Zeroing this
         // put them a whole pause apart and produced latencies like -169 s.
-        statsLock.lock(); _lastFedWall = Date(); statsLock.unlock()
+        statsLock.lock()
+        _lastTapAt = Date()
+        _lastFedWall = Date()
+        statsLock.unlock()
         onRebaseline?()
         onLog?("capturing")
     }

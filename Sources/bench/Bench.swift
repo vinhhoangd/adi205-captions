@@ -78,6 +78,7 @@ func runBench(sessions: [String: TranslationSession]) async -> Int32 {
     cfg.enableCorrection = (env["BENCH_CORRECTION"] ?? "0") == "1"
     let corrector = cfg.enableCorrection ? CorrectorFactory.make(env, prefix: "BENCH") : nil
     cfg.correctionConfidenceThreshold = Double(env["BENCH_CONF"] ?? "") ?? 0.75
+    cfg.minRetranslateGapMS = Double(env["BENCH_MIN_GAP_MS"] ?? "") ?? 450
     cfg.targetLanguages = Array(sessions.keys).sorted()
     let chunkMS = Double(env["BENCH_CHUNK_MS"] ?? "") ?? 50
 
@@ -152,7 +153,7 @@ func runBench(sessions: [String: TranslationSession]) async -> Int32 {
                 if n <= 3 || n % 20 == 0 {
                     trace("result #\(n) final=\(result.isFinal) \"\(String(result.text.characters).prefix(40))\"")
                 }
-                await pipeline.handle(result: result)
+                pipeline.handle(result: result)
             }
             trace("results sequence ended after \(n)")
         } catch { trace("results error after \(n): \(error)") }

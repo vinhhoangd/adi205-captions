@@ -215,7 +215,8 @@ public final class CaptionServer: @unchecked Sendable {
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host,
                            socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
-                let s = String(cString: host)
+                let s = String(decoding: host.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) },
+                               as: UTF8.self)
                 if !s.isEmpty, s != "127.0.0.1" { out.append(s) }
             }
         }
