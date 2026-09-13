@@ -2,6 +2,7 @@ import Foundation
 @preconcurrency import AVFoundation
 import Speech
 import CoreAudio
+import AudioGuard
 
 /// Live microphone capture, converted to whatever format SpeechAnalyzer asks for.
 ///
@@ -193,10 +194,27 @@ public final class MicSource: @unchecked Sendable {
     /// Core Audio treats `bufferSize` as a request, not a guarantee — it has its
     /// own floor of about 96 ms on this Mac. Ask in hardware frames so we at
     /// least get the smallest window the device is willing to give.
-    private func installTap(hwFormat: AVAudioFormat) {
+    @discardableResult
+    private func installTap(hwFormat requested: AVAudioFormat) -> Bool {
         let input = engine.inputNode
+        // Read the format at the instant of installing rather than trusting one
+        // read earlier. AVAudioEngine requires the tap format to equal the input
+        // node's format *now*; a device change in between makes that false and
+        // it raises rather than returning an error.
+        let hwFormat = input.outputFormat(forBus: 0)
+        guard hwFormat.sampleRate > 0 else {
+            onLog?("tap not installed: input reports no sample rate")
+            return false
+        }
+        if hwFormat.sampleRate != requested.sampleRate {
+            onLog?("input format moved \(Int(requested.sampleRate)) → \(Int(hwFormat.sampleRate)) Hz before the tap went on")
+            guard let conv = AVAudioConverter(from: hwFormat, to: format) else { return false }
+            converter = conv
+        }
         let tapFrames = AVAudioFrameCount(hwFormat.sampleRate * chunkMS / 1000.0)
-        input.installTap(onBus: 0, bufferSize: tapFrames, format: hwFormat) { [weak self] buf, _ in
+        var raised: NSString?
+        let ok = AGRunCatchingException({
+            input.installTap(onBus: 0, bufferSize: tapFrames, format: hwFormat) { [weak self] buf, _ in
             guard let self, let conv = self.converter else { return }
             // Paused: drop anything the engine delivers while it winds down, so
             // no audio from a paused session can reach the recogniser.
@@ -249,7 +267,17 @@ public final class MicSource: @unchecked Sendable {
             self._lastFedWall = Date()
             self.statsLock.unlock()
             self.continuation?.yield(AnalyzerInput(buffer: out))
+            }
+        }, &raised)
+        if !ok {
+            // Losing the tap is recoverable; aborting the process during a live
+            // lecture is not. The watchdog retries once the hardware settles.
+            let why = (raised as String?) ?? "unknown"
+            statsLock.lock(); _lastError = "tap install failed: \(why)"; statsLock.unlock()
+            onLog?("tap install failed (\(why)) — will retry when the hardware settles")
+            return false
         }
+        return true
     }
 
     /// Begins capturing. The latency clock is re-anchored because the analyzer's
@@ -258,10 +286,16 @@ public final class MicSource: @unchecked Sendable {
         guard !capturing else { return }
         // Same reasoning as rebuild(): isRunning lies after a configuration
         // change, so start from a known-stopped engine rather than trusting it.
-        engine.stop()
-        engine.prepare()
-        try engine.start()
         capturing = true
+        if needsRebuild {
+            needsRebuild = false
+            // The tap and converter belong to a device that is no longer there.
+            rebuild()
+        } else {
+            engine.stop()
+            engine.prepare()
+            try engine.start()
+        }
         startDate = nil
         statsLock.lock(); _lastTapAt = Date(); statsLock.unlock()
         // Do NOT reset _fedSeconds. The analyzer's audio clock also only advances
@@ -284,6 +318,16 @@ public final class MicSource: @unchecked Sendable {
     /// Coalesces a burst of configuration changes into a single rebuild, run
     /// after the hardware has had a moment to settle.
     public func scheduleRebuild(after delay: TimeInterval = 0.35) {
+        // Paused means the engine is not running and no audio is wanted, so
+        // there is nothing to repair yet — and rebuilding against hardware that
+        // is still settling is what raised inside installTap and aborted the
+        // process. Remember that the hardware moved and act on it at resume,
+        // when the device has stopped changing and we actually need a tap.
+        guard capturing else {
+            needsRebuild = true
+            onLog?("device changed while paused — will rebuild on resume")
+            return
+        }
         rebuildGeneration += 1
         let generation = rebuildGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -291,6 +335,8 @@ public final class MicSource: @unchecked Sendable {
             self.rebuild()
         }
     }
+
+    private var needsRebuild = false
 
     /// Re-attaches the tap after the hardware changed. Keeps the same output
     /// stream, so the analyzer never sees an interruption.

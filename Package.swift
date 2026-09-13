@@ -5,7 +5,8 @@ let package = Package(
     name: "adi205-captions",
     platforms: [.macOS(.v26)],
     targets: [
-        .target(name: "CaptionCore", path: "Sources/CaptionCore"),
+        .target(name: "AudioGuard"),
+        .target(name: "CaptionCore", dependencies: ["AudioGuard"], path: "Sources/CaptionCore"),
         .executableTarget(name: "gate", path: "Sources/gate"),
         .executableTarget(name: "setinput", path: "Sources/setinput"),
         .executableTarget(name: "bench", dependencies: ["CaptionCore"], path: "Sources/bench"),
