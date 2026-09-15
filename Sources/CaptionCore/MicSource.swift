@@ -160,7 +160,7 @@ public final class MicSource: @unchecked Sendable {
             catch { onLog?("voice processing unavailable: \(error.localizedDescription)") }
         }
 
-        let hwFormat = input.outputFormat(forBus: 0)
+        let hwFormat = liveTapFormat() ?? input.outputFormat(forBus: 0)
         onLog?("input format \(Int(hwFormat.sampleRate)) Hz x\(hwFormat.channelCount), analyzer wants \(Int(format.sampleRate)) Hz")
         guard hwFormat.sampleRate > 0 else {
             throw CaptionError.audio("input device reports no sample rate — is a microphone selected?")
@@ -198,6 +198,27 @@ public final class MicSource: @unchecked Sendable {
         return stream
     }
 
+    /// The format a tap on the input node must use *right now*.
+    ///
+    /// `outputFormat(forBus:)` is what the node advertises, and after a device
+    /// change it keeps advertising the old device until the engine is reset.
+    /// AVAudioEngine checks a tap's rate against the hardware's actual input
+    /// rate, so tapping with the stale value raises — every time, which is why a
+    /// retry loop could not recover a headset switch. `inputFormat(forBus:)` is
+    /// the hardware side and is current; take the rate from there.
+    private func liveTapFormat() -> AVAudioFormat? {
+        let input = engine.inputNode
+        let hw = input.inputFormat(forBus: 0)
+        guard hw.sampleRate > 0, hw.channelCount > 0 else { return nil }
+        let advertised = input.outputFormat(forBus: 0)
+        if advertised.sampleRate == hw.sampleRate, advertised.channelCount > 0 {
+            return advertised
+        }
+        return AVAudioFormat(standardFormatWithSampleRate: hw.sampleRate,
+                             channels: advertised.channelCount > 0 ? advertised.channelCount
+                                                                   : hw.channelCount)
+    }
+
     /// Installs (or re-installs) the capture tap for a given hardware format.
     /// Core Audio treats `bufferSize` as a request, not a guarantee — it has its
     /// own floor of about 96 ms on this Mac. Ask in hardware frames so we at
@@ -209,8 +230,7 @@ public final class MicSource: @unchecked Sendable {
         // read earlier. AVAudioEngine requires the tap format to equal the input
         // node's format *now*; a device change in between makes that false and
         // it raises rather than returning an error.
-        let hwFormat = input.outputFormat(forBus: 0)
-        guard hwFormat.sampleRate > 0 else {
+        guard let hwFormat = liveTapFormat() else {
             onLog?("tap not installed: input reports no sample rate")
             return false
         }
@@ -378,9 +398,12 @@ public final class MicSource: @unchecked Sendable {
     private func rebuild() {
         let input = engine.inputNode
         input.removeTap(onBus: 0)
-        let hw = input.outputFormat(forBus: 0)
-        guard hw.sampleRate > 0, let conv = AVAudioConverter(from: hw, to: format) else {
-            onLog?("rebuild failed: input format is \(hw)")
+        // Reset so the input node drops the departed device's configuration.
+        // Without this it keeps describing the old hardware indefinitely.
+        engine.stop()
+        engine.reset()
+        guard let hw = liveTapFormat(), let conv = AVAudioConverter(from: hw, to: format) else {
+            onLog?("rebuild failed: input reports no usable format")
             return
         }
         converter = conv
